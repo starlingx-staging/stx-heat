@@ -22,6 +22,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 stack_template_generic = '''
 heat_template_version: 2015-10-15
 description: Test template
@@ -82,6 +84,7 @@ class FakeContainer(object):
         return self.name
 
 
+@testcase.skip("Barbican not supported in WRS")
 class TestContainer(common.HeatTestCase):
 
     def setUp(self):

@@ -27,6 +27,8 @@ from heat.tests import common
 from heat.tests import utils
 from senlinclient.common import exc
 
+from testtools import testcase
+
 
 node_stack_template = """
 heat_template_version: 2016-04-08
@@ -67,6 +69,7 @@ class FakeNode(object):
         }
 
 
+@testcase.skip("Senlin not supported in WRS")
 class SenlinNodeTest(common.HeatTestCase):
     def setUp(self):
         super(SenlinNodeTest, self).setUp()

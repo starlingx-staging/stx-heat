@@ -35,6 +35,11 @@ class TestIPConstraint(common.HeatTestCase):
 
     def test_invalidate_ipv4_format(self):
         invalidate_format = [
+            None,
+            123,
+            '1.1',
+            '1.1.',
+            '1.1.1',
             '1.1.1.',
             '1.1.1.256',
             'invalidate format',
@@ -111,6 +116,9 @@ class TestCIDRConstraint(common.HeatTestCase):
             'Invalid cidr',
             '300.0.0.0/24',
             '10.0.0.0/33',
+            '10.0.0/24',
+            '10.0/24',
+            '10.0.a.10/24',
             '8.8.8.0/ 24'
         ]
         for cidr in invalidate_format:

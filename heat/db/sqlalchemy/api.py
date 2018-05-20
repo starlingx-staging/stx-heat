@@ -28,6 +28,7 @@ import osprofiler.sqlalchemy
 import six
 import sqlalchemy
 from sqlalchemy import and_
+from sqlalchemy import desc
 from sqlalchemy import func
 from sqlalchemy import or_
 from sqlalchemy import orm
@@ -1279,6 +1280,20 @@ def service_get_all_by_args(context, host, binary, hostname):
             filter_by(host=host).
             filter_by(binary=binary).
             filter_by(hostname=hostname).all())
+
+
+# Keep max_events based on created_at date
+# Only keep the most recent events.
+def expire_events(max_events):
+    engine = get_engine()
+    meta = sqlalchemy.MetaData()
+    meta.bind = engine
+    event = sqlalchemy.Table('event', meta, autoload=True)
+    events_kept = sqlalchemy.select([event.c.id])\
+        .order_by(desc(event.c.created_at))\
+        .limit(max_events)
+    event_del = event.delete().where(~event.c.id.in_(events_kept))
+    engine.execute(event_del)
 
 
 def purge_deleted(age, granularity='days', project_id=None, batch_size=20):

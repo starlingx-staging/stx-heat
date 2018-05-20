@@ -20,6 +20,7 @@ import six
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.clients.os import keystone
 from heat.engine.clients.os import neutron
 from heat.engine.clients.os import openstacksdk
 from heat.engine.hot import functions as hot_funcs
@@ -121,6 +122,12 @@ class NeutronSubnetTest(common.HeatTestCase):
                          return_value='fc68ea2c-b60b-4b4f-bd82-94ec81110766')
         self.patchobject(neutronV20, 'find_resourceid_by_name_or_id',
                          return_value='fc68ea2c-b60b-4b4f-bd82-94ec81110766')
+
+        def keystone_side_effect(value):
+            return value
+
+        self.patchobject(keystone.KeystoneClientPlugin, 'get_project_id',
+                         side_effect=keystone_side_effect)
 
     def create_subnet(self, t, stack, resource_name):
         resource_defns = stack.t.resource_definitions(stack)

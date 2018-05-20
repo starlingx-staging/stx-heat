@@ -76,7 +76,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
         self.t = template_format.parse(volume_template)
         self.use_cinder = False
 
-    def _mock_create_volume(self, fv, stack_name, final_status='available'):
+    def _mock_create_volume(self, fv, stack_name, final_status='available',
+                            error=''):
         cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
             self.cinder_fc)
         vol_name = utils.PhysName(stack_name, 'DataVolume')
@@ -87,7 +88,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
             metadata={u'Usage': u'Wiki Data Volume'}).AndReturn(
                 vt_base.FakeVolume(fv))
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
-        fv_ready = vt_base.FakeVolume(final_status, id=fv.id)
+        fv_ready = vt_base.FakeVolume(final_status, id=fv.id, error=error)
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv_ready)
         return fv_ready
 
@@ -108,10 +109,6 @@ class VolumeTest(vt_base.BaseVolumeTest):
         stack = utils.parse_stack(self.t, stack_name=stack_name)
 
         rsrc = self.create_volume(self.t, stack, 'DataVolume')
-
-        ex = self.assertRaises(exception.ResourceFailure,
-                               scheduler.TaskRunner(rsrc.destroy))
-        self.assertIn("Volume in use", six.text_type(ex))
 
         scheduler.TaskRunner(rsrc.destroy)()
 
@@ -183,7 +180,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
         stack_name = 'test_volume_create_error_stack'
         cfg.CONF.set_override('action_retry_limit', 0)
 
-        self._mock_create_volume(fv, stack_name, final_status='error')
+        self._mock_create_volume(fv, stack_name, final_status='error',
+                                 error='Unknown')
 
         self.m.ReplayAll()
 
@@ -470,7 +468,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
                                       stack_name)
 
         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
-        self.cinder_fc.volumes.delete(fv.id).AndReturn(True)
+        self.cinder_fc.volumes.force_delete(fv.id).AndReturn(True)
         self.cinder_fc.volumes.get(fv.id).AndReturn(
             vt_base.FakeVolume('deleting'))
         self.cinder_fc.volumes.get(fv.id).AndReturn(
@@ -613,7 +611,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
         cfg.CONF.set_override('action_retry_limit', 0)
         fv = self._mock_create_volume(vt_base.FakeVolume('creating'),
                                       stack_name,
-                                      final_status='error')
+                                      final_status='error',
+                                      error='Unknown')
 
         self._mock_delete_volume(fv)
         self.m.ReplayAll()
@@ -681,6 +680,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
         self.cinder_fc.volumes.update(fv.id,
                                       description=vol_name, name=vol_name)
         fv.status = 'error'
+        fv.error = 'Unknown'
         self.cinder_fc.volumes.get('vol-123').AndReturn(fv)
 
         self.m.ReplayAll()

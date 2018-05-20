@@ -112,7 +112,7 @@ class NeutronResource(resource.Resource):
         status = attributes['status']
         if status == 'BUILD':
             return False
-        if status in ('ACTIVE', 'DOWN'):
+        if status in ('ACTIVE', 'DOWN', 'UNKNOWN'):
             return True
         elif status in ('ERROR', 'DEGRADED'):
             raise exception.ResourceInError(

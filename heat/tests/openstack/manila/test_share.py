@@ -24,6 +24,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 manila_template = """
 heat_template_version: 2015-04-30
@@ -55,6 +57,7 @@ class DummyShare(object):
         self.project_id = 'p_id'
 
 
+@testcase.skip("Manila not supported in WRS")
 class ManilaShareTest(common.HeatTestCase):
 
     def setUp(self):

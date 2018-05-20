@@ -48,7 +48,7 @@ class NovaClientPluginTest(NovaClientPluginTestCase):
         ext_mock = self.patchobject(nc, 'discover_extensions')
         plugin = context.clients.client_plugin('nova')
         client = plugin.client()
-        ext_mock.assert_called_once_with('2.1')
+        ext_mock.assert_called_once_with('2.25')
         self.assertIsNotNone(client.servers)
 
     def test_v2_26_create(self):

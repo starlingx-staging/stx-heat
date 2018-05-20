@@ -1567,6 +1567,7 @@ class ResourceTest(common.HeatTestCase):
         invalid_states = [s for s in
                           itertools.product(res.ACTIONS, res.STATUSES)
                           if s not in ((res.SUSPEND, res.COMPLETE),
+                                       (res.CHECK, res.COMPLETE),
                                        (res.RESUME, res.FAILED),
                                        (res.RESUME, res.COMPLETE))]
         for state in invalid_states:
@@ -4503,7 +4504,8 @@ class TestResourceMapping(common.HeatTestCase):
             # Platform type::Service/Type::Optional Sub-sections::Name
             self.assertGreaterEqual(len(type_elements), 3)
             # type should be OS or AWS
-            self.assertIn(type_elements[0], ('AWS', 'OS'))
+            # WRS adds new 'WR' type
+            self.assertIn(type_elements[0], ('AWS', 'OS', 'WR'))
             # check that value is a class object
             self.assertIsInstance(r_class, six.class_types)
             # check that class is subclass of Resource base class

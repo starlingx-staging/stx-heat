@@ -297,13 +297,17 @@ class StackController(object):
                 'with_count',
                 req.params.get('with_count'))
 
-        if not filter_params:
-            filter_params = None
-
         if use_admin_cnxt:
             cnxt = context.get_admin_context()
         else:
             cnxt = req.context
+            # WRS filter out stacks from other tenants
+            # cntx might be admin but we only want admin stacks
+            if cnxt.is_admin:
+                filter_params['tenant'] = cnxt.tenant_id
+
+        if not filter_params:
+            filter_params = None
 
         stacks = self.rpc_client.list_stacks(cnxt,
                                              filters=filter_params,

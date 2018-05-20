@@ -33,9 +33,23 @@ class TestConstraintDelay(constraints.BaseCustomConstraint):
 
 class IPConstraint(constraints.BaseCustomConstraint):
 
+    # is_valid_ip in oslo_utils simply calls netaddr validation
+    # netaddr considers 1.2.3 and 1.2 to be valid ipv4 addresses
+    # This code makes ipv4 require at least 3 dots
+    def is_valid_ipv4(self, address):
+        if isinstance(address, six.string_types):
+            if address.count('.') != 3:
+                return False
+        return netutils.is_valid_ipv4(address)
+
+    def is_valid_ipv6(self, address):
+        return netutils.is_valid_ipv6(address)
+
     def validate(self, value, context, template=None):
         self._error_message = 'Invalid IP address'
-        return netutils.is_valid_ip(value)
+        if not isinstance(value, six.string_types):
+            return False
+        return self.is_valid_ipv4(value) or self.is_valid_ipv6(value)
 
 
 class MACConstraint(constraints.BaseCustomConstraint):
@@ -107,9 +121,18 @@ class CIDRConstraint(constraints.BaseCustomConstraint):
             return False
         return True
 
+    def _validate_ip(self, data, context, template):
+        chunks = data.split('/')
+        if len(chunks) > 1:
+            ipaddr = chunks[0]
+            if not IPConstraint().validate(ipaddr, context, template):
+                raise ValueError('invalid IPNetwork %s' % data)
+        return True
+
     def validate(self, value, context, template=None):
         try:
-            netaddr.IPNetwork(value)
+            netaddr.IPNetwork(value, implicit_prefix=True)
+            self._validate_ip(value, context, template)
             return self._validate_whitespace(value)
         except Exception as ex:
             self._error_message = 'Invalid net cidr %s ' % six.text_type(ex)

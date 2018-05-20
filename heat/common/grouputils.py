@@ -43,7 +43,7 @@ def get_members(group, include_failed=False):
                      if include_failed or r.status != r.FAILED]
 
     return sorted(resources,
-                  key=lambda r: (r.status != r.FAILED, r.created_time, r.name))
+                  key=lambda r: (r.created_time, r.name))
 
 
 def get_member_refids(group, exclude=None):

@@ -19,7 +19,10 @@ from heat.common import exception as heat_exception
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
 
+
+@testcase.skip("Manila not supported in WRS")
 class ManilaClientPluginTest(common.HeatTestCase):
     scenarios = [
         ('share_type',

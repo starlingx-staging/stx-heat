@@ -1561,6 +1561,11 @@ class ServersTest(common.HeatTestCase):
         # this makes sure the auto increment worked on server creation
         self.assertGreater(server.id, 0)
 
+        # WRS: Patch stop_server call to return immediately. otherwise
+        # this test will take 60 seconds for the stop to timeout
+        self.patchobject(nova.NovaClientPlugin, 'stop_server',
+                         return_value=True)
+
         self.patchobject(self.fc.client, 'delete_servers_1234',
                          side_effect=fakes_nova.fake_exception())
         scheduler.TaskRunner(server.delete)()
@@ -2055,6 +2060,7 @@ class ServersTest(common.HeatTestCase):
             return_server.status = status
             return return_server
 
+        self.patchobject(server, 'needs_replace', return_value=False)
         self.patchobject(self.fc.servers, 'get',
                          side_effect=[set_status('RESIZE'),
                                       set_status('ERROR')])
@@ -2203,6 +2209,107 @@ class ServersTest(common.HeatTestCase):
         scheduler.TaskRunner(server.update, update_template)()
         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
 
+    # WRS enhancement to allow a rebuild when userdata updated
+    def _wrs_userdata_rebuild(self, tmpl, server, new_userdata,
+                              formatted_userdata):
+        # Step 1: Setup a fake server to rebuild
+        return_server = self.fc.servers.list()[1]
+        return_server.id = '1234'
+
+        # Step 2: setup the mock environment
+        self.patchobject(server, 'store_external_ports')
+        self.patchobject(nova.NovaClientPlugin, '_create',
+                         return_value=self.fc)
+        self.patchobject(nova.NovaClientPlugin,
+                         'build_userdata',
+                         return_value=formatted_userdata)
+        self.patchobject(self.fc.servers, 'get',
+                         return_value=return_server)
+        mock_rebuild = self.patchobject(self.fc.servers, 'rebuild')
+
+        # Step 3: Do the update
+        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
+        update_props['user_data'] = new_userdata
+        update_template = server.t.freeze(properties=update_props)
+        server.action = server.CREATE
+        scheduler.TaskRunner(server.update, update_template)()
+
+        # Step 4: Verify the rebuild occurred and the results are good
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+        mock_rebuild.assert_called_once_with(
+            return_server, '1', password=None,
+            preserve_ephemeral=False,
+            files={}, meta={}, userdata=formatted_userdata)
+
+    # Test 1: make sure the new REBUILD policy triggers a rebuild
+    @mock.patch.object(servers.Server, 'prepare_for_replace')
+    @mock.patch.object(nova.NovaClientPlugin, '_create')
+    def test_server_update_userdata_policy_rebuild(self, mock_create,
+                                                   mock_replace):
+        stack_name = 'update_userdata_rebuild'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        self.patchobject(servers.Server, 'check_update_complete',
+                         return_value=True)
+        # user data format can NOT be updated
+        tmpl['Resources']['WebServer']['Properties'][
+            'user_data_format'] = 'RAW'
+        # update policy can be changed later
+        tmpl['Resources']['WebServer']['Properties'][
+            'user_data_update_policy'] = 'REBUILD'
+        # userdata can be changed later
+        tmpl['Resources']['WebServer']['Properties'][
+            'user_data'] = 'before'
+
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_update_userdata_rebuild',
+                                resource_defns['WebServer'], stack)
+        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
+        update_props['user_data'] = 'changed1'
+        update_template = server.t.freeze(properties=update_props)
+        server.action = server.CREATE
+        scheduler.TaskRunner(server.update, update_template)()
+        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+
+    # Test 2: pass new userdata to rebuild
+    # user_data_format='RAW'
+    # server booted with glance image (default)
+    def test_server_update_rebuild_raw_userdata(self):
+        # setup the starting stack
+        stack_name = 'update_rebuild_raw_userdata'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        tmpl['Resources']['WebServer']['Properties'][
+            'user_data_format'] = 'RAW'
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'user_data_update_policy'] = 'REBUILD'
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'user_data'] = 'before'
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_' + stack_name,
+                                resource_defns['WebServer'], stack)
+        self._wrs_userdata_rebuild(tmpl, server, 'new userdata',
+                                   'new userdata')
+
+    # Test 3: pass new userdata to rebuild
+    # user_data_format='HEAT_CFNTOOLS'
+    # server booted with glance image (default)
+    def test_server_update_rebuild_cfn_userdata(self):
+        # setup the starting stack
+        stack_name = 'update_rebuild_cfn_userdata'
+        (tmpl, stack) = self._setup_test_stack(stack_name)
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'user_data_format'] = 'HEAT_CFNTOOLS'
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'user_data_update_policy'] = 'REBUILD'
+        tmpl.t['Resources']['WebServer']['Properties'][
+            'user_data'] = 'before'
+        resource_defns = tmpl.resource_definitions(stack)
+        server = servers.Server('server_' + stack_name,
+                                resource_defns['WebServer'], stack)
+        # The HEAT_CFNTOOLS converts the userdata into a large MIME structure
+        self._wrs_userdata_rebuild(tmpl, server, 'new userdata',
+                                   'MIME data junk')
+    # end WRS enhancement.
+
     @mock.patch.object(servers.Server, 'prepare_for_replace')
     def test_server_update_image_replace(self, mock_replace):
         stack_name = 'update_imgrep'
@@ -2262,12 +2369,12 @@ class ServersTest(common.HeatTestCase):
             mock_rebuild.assert_called_once_with(
                 return_server, '2', password=password,
                 preserve_ephemeral=False,
-                meta={}, files={})
+                meta={}, files={}, userdata=None)
         else:
             mock_rebuild.assert_called_once_with(
                 return_server, '2', password=password,
                 preserve_ephemeral=True,
-                meta={}, files={})
+                meta={}, files={}, userdata=None)
 
     def test_server_update_image_rebuild_status_rebuild(self):
         # Normally we will see 'REBUILD' first and then 'ACTIVE".
@@ -2317,6 +2424,7 @@ class ServersTest(common.HeatTestCase):
             return_server.status = status
             return return_server
 
+        self.patchobject(server, 'needs_replace', return_value=False)
         self.patchobject(self.fc.servers, 'get',
                          side_effect=[set_status('REBUILD'),
                                       set_status('ERROR')])
@@ -2329,7 +2437,7 @@ class ServersTest(common.HeatTestCase):
         self.assertEqual((server.UPDATE, server.FAILED), server.state)
         mock_rebuild.assert_called_once_with(
             return_server, '2', password=None, preserve_ephemeral=False,
-            meta={}, files={})
+            meta={}, files={}, userdata=None)
 
     def test_server_update_properties(self):
         return_server = self.fc.servers.list()[1]
@@ -2400,7 +2508,7 @@ class ServersTest(common.HeatTestCase):
         self.patchobject(self.fc.servers, 'get',
                          side_effect=[set_status('ACTIVE'),
                                       set_status('ACTIVE'),
-                                      set_status('SUSPENDED')])
+                                      set_status('PAUSED')])
 
         scheduler.TaskRunner(server.suspend)()
         self.assertEqual((server.SUSPEND, server.COMPLETE), server.state)
@@ -2455,8 +2563,8 @@ class ServersTest(common.HeatTestCase):
 
         self.patchobject(return_server, 'resume')
         self.patchobject(self.fc.servers, 'get',
-                         side_effect=[set_status('SUSPENDED'),
-                                      set_status('SUSPENDED'),
+                         side_effect=[set_status('PAUSED'),
+                                      set_status('PAUSED'),
                                       set_status('ACTIVE')])
 
         scheduler.TaskRunner(server.resume)()
@@ -2534,7 +2642,7 @@ class ServersTest(common.HeatTestCase):
         self._test_server_status_not_build_active('SHUTOFF')
 
     def test_server_status_suspended(self):
-        self._test_server_status_not_build_active('SUSPENDED')
+        self._test_server_status_not_build_active('PAUSED')
 
     def test_server_status_verify_resize(self):
         self._test_server_status_not_build_active('VERIFY_RESIZE')
@@ -3252,10 +3360,13 @@ class ServersTest(common.HeatTestCase):
 
     def create_old_net(self, port=None, net=None,
                        ip=None, uuid=None, subnet=None,
+                       vif_model=None, vif_pci_address=None,
                        port_extra_properties=None, floating_ip=None,
                        str_network=None, tag=None):
         return {'port': port, 'network': net, 'fixed_ip': ip, 'uuid': uuid,
                 'subnet': subnet, 'floating_ip': floating_ip,
+                'vif-model': vif_model,
+                'vif-pci-address': vif_pci_address,
                 'port_extra_properties': port_extra_properties,
                 'allocate_network': str_network,
                 'tag': tag}
@@ -3307,6 +3418,7 @@ class ServersTest(common.HeatTestCase):
             old_nets_copy = copy.deepcopy(old_nets)
             for net in new_nets_copy:
                 for key in ('port', 'network', 'fixed_ip', 'uuid', 'subnet',
+                            'vif-model', 'vif-pci-address',
                             'port_extra_properties', 'floating_ip',
                             'allocate_network', 'tag'):
                     net.setdefault(key)
@@ -3339,6 +3451,7 @@ class ServersTest(common.HeatTestCase):
         old_nets_copy = copy.deepcopy(old_nets)
         for net in new_nets_copy:
             for key in ('port', 'network', 'fixed_ip', 'uuid', 'subnet',
+                        'vif-model', 'vif-pci-address',
                         'port_extra_properties', 'floating_ip',
                         'allocate_network', 'tag'):
                 net.setdefault(key)
@@ -3364,6 +3477,8 @@ class ServersTest(common.HeatTestCase):
              'subnet': None,
              'uuid': None,
              'port_extra_properties': None,
+             'vif-model': None,
+             'vif-pci-address': None,
              'floating_ip': None,
              'allocate_network': None,
              'tag': None}]
@@ -3408,6 +3523,8 @@ class ServersTest(common.HeatTestCase):
              'fixed_ip': None,
              'subnet': None,
              'floating_ip': None,
+             'vif-model': None,
+             'vif-pci-address': None,
              'port_extra_properties': None,
              'uuid': None,
              'allocate_network': None,
@@ -3418,6 +3535,8 @@ class ServersTest(common.HeatTestCase):
              'subnet': None,
              'port_extra_properties': None,
              'floating_ip': None,
+             'vif-model': None,
+             'vif-pci-address': None,
              'uuid': None,
              'allocate_network': None,
              'tag': None},
@@ -3427,6 +3546,8 @@ class ServersTest(common.HeatTestCase):
              'subnet': None,
              'port_extra_properties': None,
              'floating_ip': None,
+             'vif-model': None,
+             'vif-pci-address': None,
              'uuid': None,
              'allocate_network': None,
              'tag': None},
@@ -3436,6 +3557,8 @@ class ServersTest(common.HeatTestCase):
              'subnet': None,
              'port_extra_properties': None,
              'floating_ip': None,
+             'vif-model': None,
+             'vif-pci-address': None,
              'uuid': None,
              'allocate_network': None,
              'tag': None},
@@ -3445,6 +3568,8 @@ class ServersTest(common.HeatTestCase):
              'subnet': None,
              'port_extra_properties': None,
              'floating_ip': None,
+             'vif-model': None,
+             'vif-pci-address': None,
              'network': None,
              'allocate_network': None,
              'tag': None}]
@@ -3980,9 +4105,10 @@ class ServersTest(common.HeatTestCase):
 
         ex = glance.client_exception.EntityMatchNotFound(entity='image',
                                                          args='Update Image')
+        # Querying after_props returns error but not before_props
         self.patchobject(glance.GlanceClientPlugin,
                          'find_image_by_name_or_id',
-                         side_effect=[1, ex])
+                         side_effect=[ex, 1])
         update_props = self.server_props.copy()
         update_props['image'] = 'Update Image'
         update_template = server.t.freeze(properties=update_props)
@@ -3992,8 +4118,8 @@ class ServersTest(common.HeatTestCase):
         err = self.assertRaises(exception.ResourceFailure,
                                 updater)
         self.assertEqual("StackValidationFailed: resources.my_server: "
-                         "Property error: Properties.image: Error validating "
-                         "value '1': No image matching Update Image.",
+                         "Property error: Properties.image: "
+                         "No image matching Update Image.",
                          six.text_type(err))
 
     def test_server_snapshot(self):
@@ -4236,6 +4362,10 @@ class ServersTest(common.HeatTestCase):
         rsrc = stack['WebServer']
         mock_plugin = self.patchobject(nova.NovaClientPlugin, '_create')
         mock_plugin.return_value = self.fc
+
+        self.patchobject(nova.NovaClientPlugin, 'stop_server',
+                         return_value=True)
+
         delete_server = self.patchobject(self.fc.servers, 'delete')
         delete_server.side_effect = nova_exceptions.NotFound(404)
         create_image = self.patchobject(self.fc.servers, 'create_image')

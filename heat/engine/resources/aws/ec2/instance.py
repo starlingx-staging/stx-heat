@@ -812,11 +812,16 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
                          'net_interfaces': self.NETWORK_INTERFACES})
 
     def handle_delete(self):
+        # WRS: Issue STOP before issuing DELETE
+        if self.resource_id is not None:
+            self.client_plugin().stop_server(self.resource_id)
+
         # make sure to delete the port which implicit-created by heat
         self._port_data_delete()
 
         if self.resource_id is None:
             return
+
         try:
             self.client().servers.delete(self.resource_id)
         except Exception as e:
@@ -835,6 +840,7 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
         Note we do not wait for the SUSPENDED state, this is polled for by
         check_suspend_complete in a similar way to the create logic so we can
         take advantage of coroutines.
+        WRS changed SUSPENDED to PAUSED
         """
         if self.resource_id is None:
             raise exception.Error(_('Cannot suspend %s, resource_id not set') %
@@ -851,8 +857,8 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
         else:
             # if the instance has been suspended successful,
             # no need to suspend again
-            if self.client_plugin().get_status(server) != 'SUSPENDED':
-                LOG.debug("suspending instance %s", self.resource_id)
+            if self.client_plugin().get_status(server) != 'PAUSED':
+                LOG.debug("suspending instance %s" % self.resource_id)
                 server.suspend()
             return server.id
 
@@ -864,8 +870,9 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
         status = cp.get_status(server)
         LOG.debug('%(name)s check_suspend_complete status = %(status)s',
                   {'name': self.name, 'status': status})
+        # WRS changed SUSPENDED to PAUSED
         if status in list(cp.deferred_server_statuses + ['ACTIVE']):
-            return status == 'SUSPENDED'
+            return status == 'PAUSED'
         else:
             exc = exception.ResourceUnknownStatus(
                 result=_('Suspend of instance %s failed') % server.name,

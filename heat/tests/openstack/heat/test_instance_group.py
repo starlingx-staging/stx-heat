@@ -402,12 +402,20 @@ class ReplaceTest(InstanceGroupWithNestedStack):
 
 class ResizeWithFailedInstancesTest(InstanceGroupWithNestedStack):
     scenarios = [
-        ('1', dict(size=3, failed=['r1'], content={'r2', 'r3', 'r4'})),
+        # OLD way automatically puts FAILED VMs at the front of the list
+        # ('1', dict(size=3, failed=['r1'], content={'r2', 'r3', 'r4'})),
+        # ('2', dict(size=3, failed=['r4'], content={'r1', 'r2', 'r3'})),
+        # ('3', dict(size=2, failed=['r1', 'r2'], content={'r3', 'r4'})),
+        # ('4', dict(size=2, failed=['r3', 'r4'], content={'r1', 'r2'})),
+        # ('5', dict(size=2, failed=['r2', 'r3'], content={'r1', 'r4'})),
+        # ('6', dict(size=3, failed=['r2', 'r3'], content={'r1', 'r3', 'r4'}))]
+        # WRS leaves order alone, and deleted from END of the list
+        ('1', dict(size=3, failed=['r1'], content={'r1', 'r2', 'r3'})),
         ('2', dict(size=3, failed=['r4'], content={'r1', 'r2', 'r3'})),
-        ('3', dict(size=2, failed=['r1', 'r2'], content={'r3', 'r4'})),
+        ('3', dict(size=2, failed=['r1', 'r2'], content={'r1', 'r2'})),
         ('4', dict(size=2, failed=['r3', 'r4'], content={'r1', 'r2'})),
-        ('5', dict(size=2, failed=['r2', 'r3'], content={'r1', 'r4'})),
-        ('6', dict(size=3, failed=['r2', 'r3'], content={'r1', 'r3', 'r4'}))]
+        ('5', dict(size=2, failed=['r2', 'r3'], content={'r1', 'r2'})),
+        ('6', dict(size=3, failed=['r2', 'r3'], content={'r1', 'r2', 'r3'}))]
 
     def setUp(self):
         super(ResizeWithFailedInstancesTest, self).setUp()

@@ -414,12 +414,15 @@ class SqlAlchemyTest(common.HeatTestCase):
 
         st = db_api.stack_get_status(self.ctx, UUID1)
         self.assertEqual(('CREATE', 'IN_PROGRESS', '', None), st)
+        # WRS: updated_at was None.  After delete it should be set
 
         stack.delete()
         st = db_api.stack_get_status(self.ctx, UUID1)
+        # WRS: Delete will alter updated_at.
+        updated_at = st[3]
         self.assertEqual(
             ('DELETE', 'COMPLETE',
-             'Stack DELETE completed successfully', None),
+             'Stack DELETE completed successfully', updated_at),
             st)
 
         self.assertRaises(exception.NotFound,

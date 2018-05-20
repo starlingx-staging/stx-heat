@@ -20,7 +20,7 @@ def _identity(resource_name, definition):
 
 def member_definitions(old_resources, new_definition,
                        num_resources, num_new,
-                       get_new_id, customise=_identity):
+                       get_new_id, customise=_identity, delete_oldest=True):
     """Iterate over resource definitions for a scaling group
 
     Generates the definitions for the next change to the scaling group. Each
@@ -38,7 +38,11 @@ def member_definitions(old_resources, new_definition,
     with any shortfall made up by modifying the definitions of existing
     resources.
     """
-    old_resources = old_resources[-num_resources:]
+    if delete_oldest:
+        old_resources = old_resources[-num_resources:]
+    else:
+        # WRS:  remove the most recent items (ones at end of list)
+        old_resources = old_resources[:num_resources]
     num_create = num_resources - len(old_resources)
     num_replace = num_new - num_create
 
@@ -53,7 +57,12 @@ def member_definitions(old_resources, new_definition,
                 yield old_name, old_definition
         else:
             new_name = get_new_id()
-            yield new_name, customise(new_name, new_definition)
+            custom_definition = customise(new_name, new_definition)
+            # WRS: specify the group index in metadata for the resource
+            if not delete_oldest:
+                if hasattr(custom_definition, "set_group_index"):
+                    custom_definition.set_group_index(i)
+            yield new_name, custom_definition
 
 
 def make_template(resource_definitions,

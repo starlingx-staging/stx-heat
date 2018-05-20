@@ -21,7 +21,10 @@ from heat.engine.clients.os import barbican
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
 
+
+@testcase.skip("Barbican not supported in WRS")
 class BarbicanClientPluginTest(common.HeatTestCase):
 
     def setUp(self):
@@ -53,6 +56,7 @@ class BarbicanClientPluginTest(common.HeatTestCase):
             "secret")
 
 
+@testcase.skip("Barbican not supported in WRS")
 class SecretConstraintTest(common.HeatTestCase):
 
     def setUp(self):
@@ -73,6 +77,7 @@ class SecretConstraintTest(common.HeatTestCase):
         self.assertFalse(self.constraint.validate("bar", self.ctx))
 
 
+@testcase.skip("Barbican not supported in WRS")
 class ContainerConstraintTest(common.HeatTestCase):
 
     def setUp(self):

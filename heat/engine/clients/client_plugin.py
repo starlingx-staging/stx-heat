@@ -88,7 +88,16 @@ class ClientPlugin(object):
         pass
 
     def _get_region_name(self):
-        return self.context.region_name or cfg.CONF.region_name_for_services
+        reg = self.context.region_name or cfg.CONF.region_name_for_services
+        # If Shared Services configured, override region for image/volumes
+        shared_services_region_name = cfg.CONF.region_name_for_shared_services
+        shared_services_types = cfg.CONF.shared_services_types
+        # Newton declares service_types = ['something'] per client
+        if shared_services_region_name:
+            # Convert lists to set and check for an intersection
+            if set(self.service_types) & set(shared_services_types):
+                reg = shared_services_region_name
+        return reg
 
     def url_for(self, **kwargs):
         keystone_session = self.context.keystone_session

@@ -32,6 +32,8 @@ from heat.engine import template as tmpl
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 db_template = '''
 {
@@ -114,6 +116,7 @@ class FakeVersion(object):
         self.name = name
 
 
+@testcase.skip("Trove not supported in WRS")
 class InstanceTest(common.HeatTestCase):
 
     def setUp(self):
@@ -582,6 +585,7 @@ class InstanceTest(common.HeatTestCase):
         self.assertEqual(expected, reality)
 
 
+@testcase.skip("Trove not supported in WRS")
 @mock.patch.object(resource.Resource, "client_plugin")
 @mock.patch.object(resource.Resource, "client")
 class InstanceUpdateTests(common.HeatTestCase):

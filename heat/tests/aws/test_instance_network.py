@@ -186,7 +186,8 @@ class instancesTest(common.HeatTestCase):
         d2 = copy.deepcopy(d1)
         if vm_delete_status == 'DELETED':
             d2['server']['status'] = vm_delete_status
-            get().AndReturn((200, d2))
+            # get().AndReturn((200, d2))
+            get().AndRaise(fakes_nova.fake_exception())
         else:
             get().AndRaise(fakes_nova.fake_exception())
 

@@ -24,6 +24,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 stack_template = '''
 heat_template_version: 2013-05-23
@@ -70,6 +72,7 @@ class FakeVersion(object):
         self.name = name
 
 
+@testcase.skip("Trove not supported in WRS")
 class TroveClusterTest(common.HeatTestCase):
 
     def setUp(self):

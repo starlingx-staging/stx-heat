@@ -31,6 +31,9 @@ from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
+
 workflow_template = """
 heat_template_version: 2013-05-23
 resources:
@@ -355,6 +358,7 @@ class FakeWorkflow(object):
         return self._data
 
 
+@testcase.skip("Mistral not supported in WRS")
 class TestMistralWorkflow(common.HeatTestCase):
     def setUp(self):
         super(TestMistralWorkflow, self).setUp()

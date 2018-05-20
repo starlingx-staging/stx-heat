@@ -10,6 +10,10 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+#
+# Copyright (c) 2015-2017 Wind River Systems, Inc.
+#
+#
 
 import six
 
@@ -38,16 +42,20 @@ class Router(neutron.NeutronResource):
     PROPERTIES = (
         NAME, EXTERNAL_GATEWAY, VALUE_SPECS, ADMIN_STATE_UP,
         L3_AGENT_ID, L3_AGENT_IDS, DISTRIBUTED, HA, TAGS,
+        TENANT_ID,
     ) = (
         'name', 'external_gateway_info', 'value_specs', 'admin_state_up',
         'l3_agent_id', 'l3_agent_ids', 'distributed', 'ha', 'tags',
+        'tenant_id',
     )
 
     _EXTERNAL_GATEWAY_KEYS = (
         EXTERNAL_GATEWAY_NETWORK, EXTERNAL_GATEWAY_ENABLE_SNAT,
         EXTERNAL_GATEWAY_FIXED_IPS,
+        FIXED_IP,
     ) = (
         'network', 'enable_snat', 'external_fixed_ips',
+        'fixed_ip',
     )
 
     _EXTERNAL_GATEWAY_FIXED_IPS_KEYS = (
@@ -86,6 +94,21 @@ class Router(neutron.NeutronResource):
                       'default policy setting in Neutron restricts usage of '
                       'this property to administrative users only.'),
                     update_allowed=True
+                ),
+                # fixed_ip added in Titanium Cloud R2 and deprecated in R3
+                FIXED_IP: properties.Schema(
+                    properties.Schema.STRING,
+                    _('External fixed IP Address.'),
+                    update_allowed=True,
+                    support_status=support.SupportStatus(
+                        status=support.HIDDEN,
+                        version='5.0.0',
+                        message=_('Use %s.') % EXTERNAL_GATEWAY_FIXED_IPS,
+                        previous_status=support.SupportStatus(
+                            status=support.DEPRECATED,
+                            version='2014.2'
+                        )
+                    ),
                 ),
                 EXTERNAL_GATEWAY_FIXED_IPS: properties.Schema(
                     properties.Schema.LIST,
@@ -180,6 +203,14 @@ class Router(neutron.NeutronResource):
             update_allowed=True,
             support_status=support.SupportStatus(version='9.0.0')
         ),
+        TENANT_ID: properties.Schema(
+            properties.Schema.STRING,
+            _('The ID of the tenant who owns the router. Only administrative '
+              'users can specify a tenant ID other than their own.'),
+            constraints=[
+                constraints.CustomConstraint('keystone.project')
+            ],
+        ),
     }
 
     attributes_schema = {
@@ -221,7 +252,13 @@ class Router(neutron.NeutronResource):
                  self.SUBNET],
                 client_plugin=self.client_plugin(),
                 finder='find_resourceid_by_name_or_id',
-                entity='subnet')
+                entity='subnet'),
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.RESOLVE,
+                [self.TENANT_ID],
+                client_plugin=self.client_plugin('keystone'),
+                finder='get_project_id'),
             ]
         if props.get(self.L3_AGENT_ID):
             rules.extend([
@@ -273,6 +310,9 @@ class Router(neutron.NeutronResource):
         gateway = props.get(self.EXTERNAL_GATEWAY)
         if gateway:
             gateway['network_id'] = gateway.pop(self.EXTERNAL_GATEWAY_NETWORK)
+            # WRS. FIXED_IP was a R2 feature, remove if blank
+            if gateway[self.FIXED_IP] is None:
+                del gateway[self.FIXED_IP]
             if gateway[self.EXTERNAL_GATEWAY_ENABLE_SNAT] is None:
                 del gateway[self.EXTERNAL_GATEWAY_ENABLE_SNAT]
             if gateway[self.EXTERNAL_GATEWAY_FIXED_IPS] is None:
@@ -292,7 +332,7 @@ class Router(neutron.NeutronResource):
     def _resolve_subnet(self, gateway):
         external_gw_fixed_ips = gateway[self.EXTERNAL_GATEWAY_FIXED_IPS]
         for fixed_ip in external_gw_fixed_ips:
-            for key, value in six.iteritems(fixed_ip):
+            for key, value in fixed_ip.copy().items():
                 if value is None:
                     fixed_ip.pop(key)
             if self.SUBNET in fixed_ip:

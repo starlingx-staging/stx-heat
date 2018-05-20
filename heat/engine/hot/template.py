@@ -321,6 +321,8 @@ class HOTemplate20150430(HOTemplate20141016):
         # functions added in 2015-04-30
         'digest': hot_funcs.Digest,
 
+        # WRS extension
+        'group_index': hot_funcs.GroupIndex,
         # functions removed from 2014-10-16
         'Fn::GetAZs': hot_funcs.Removed,
         'Fn::Join': hot_funcs.Removed,

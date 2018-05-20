@@ -10,6 +10,9 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+import keyring
+
+from heat.common.i18n import _
 
 from keystoneauth1 import access
 from keystoneauth1.identity import access as access_plugin
@@ -49,6 +52,17 @@ LOG = logging.getLogger(__name__)
 PASSWORD_PLUGIN = 'password'
 TRUSTEE_CONF_GROUP = 'trustee'
 ks_loading.register_auth_conf_options(cfg.CONF, TRUSTEE_CONF_GROUP)
+
+# Unable to query the keystone_authtoken config values so use trustee
+tis_domain_opts = [
+    cfg.StrOpt('user_domain_name',
+               default='Default',
+               help=_('keystone user domain name for scoping')),
+    cfg.StrOpt('project_domain_name',
+               default='Default',
+               help=_('keystone project domain name for scoping')),
+    ]
+cfg.CONF.register_opts(tis_domain_opts)
 
 
 def list_opts():
@@ -254,10 +268,16 @@ class RequestContext(context.RequestContext):
                 auth_ref=access_info, auth_url=self.keystone_v3_endpoint)
 
         if self.password:
+            # Never trust the password.  Refer to keyring
+            LOG.info("Re-determining password from keyring")
+            self.password = keyring.get_password('CGCS', self.username)
+            # TIS user_domain_id is blank. Use user_domain_name to lookup user
+            user_domain_name = cfg.CONF.user_domain_name
             return generic.Password(username=self.username,
                                     password=self.password,
                                     project_id=self.tenant_id,
                                     user_domain_id=self.user_domain,
+                                    user_domain_name=user_domain_name,
                                     auth_url=self.keystone_v3_endpoint)
 
         if self.auth_token:
@@ -270,6 +290,7 @@ class RequestContext(context.RequestContext):
 
         LOG.error("Keystone API connection failed, no password "
                   "trust or auth_token!")
+
         raise exception.AuthorizationFailure()
 
     def reload_auth_plugin(self):

@@ -128,6 +128,11 @@ def do_migrate():
                           "in COMPLETE state in order to be migrated."))
 
 
+def expire_events():
+    if CONF.expirer.max_events > 0:
+        db_api.expire_events(CONF.expirer.max_events)
+
+
 def purge_deleted():
     """Remove database records that have been previously soft deleted."""
     db_api.purge_deleted(CONF.command.age,
@@ -168,6 +173,10 @@ def add_command_parsers(subparsers):
     parser = subparsers.add_parser('migrate_convergence_1')
     parser.set_defaults(func=do_migrate)
     parser.add_argument('stack_id')
+
+    # expire_events parser
+    parser = subparsers.add_parser('expire_events')
+    parser.set_defaults(func=expire_events)
 
     # purge_deleted parser
     parser = subparsers.add_parser('purge_deleted')

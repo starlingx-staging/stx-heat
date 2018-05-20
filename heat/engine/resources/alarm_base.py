@@ -178,7 +178,7 @@ common_properties_schema = {
 
 
 NOVA_METERS = ['instance', 'memory', 'memory.usage', 'memory.resident',
-               'cpu', 'cpu_util', 'vcpus',
+               'cpu', 'cpu_util', 'vcpus', 'vcpu_util',
                'disk.read.requests', 'disk.read.requests.rate',
                'disk.write.requests', 'disk.write.requests.rate',
                'disk.read.bytes', 'disk.read.bytes.rate',

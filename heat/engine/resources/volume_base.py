@@ -53,7 +53,8 @@ class BaseVolume(resource.Resource):
             return False
         if vol.status == 'error':
             raise exception.ResourceInError(
-                resource_status=vol.status)
+                resource_status=vol.status,
+                status_reason=vol.error)
         else:
             raise exception.ResourceUnknownStatus(
                 resource_status=vol.status,
@@ -118,12 +119,12 @@ class BaseVolume(resource.Resource):
         try:
             cinder = self.client()
             vol = cinder.volumes.get(self.resource_id)
-            if vol.status == 'in-use':
-                raise exception.Error(_('Volume in use'))
             # if the volume is already in deleting status,
             # just wait for the deletion to complete
             if vol.status != 'deleting':
-                cinder.volumes.delete(self.resource_id)
+                # Always use force delete (ie: downloading, attached)
+                # This will only fail if volume is truly in use
+                cinder.volumes.force_delete(self.resource_id)
             return False
         except Exception as ex:
             self.client_plugin().ignore_not_found(ex)
@@ -155,6 +156,11 @@ class BaseVolume(resource.Resource):
                 raise exception.ResourceInError(status_reason='delete',
                                                 resource_status=vol.status)
             else:
+                # WRS enhancement.  if wrs-background-delete is 'True'
+                # HEAT will not wait for it to complete
+                if vol.metadata.get('wrs-background-delete', False) == 'True':
+                    prg.delete['complete'] = True
+                    return True
                 return False
         return True
 

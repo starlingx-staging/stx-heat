@@ -30,6 +30,10 @@ from heat.scaling import lbutils
 from heat.scaling import rolling_update
 from heat.scaling import template
 
+from oslo_log import log as logging
+
+
+LOG = logging.getLogger(__name__)
 
 (SCALED_RESOURCE_TYPE,) = ('OS::Heat::ScaledResource',)
 
@@ -262,9 +266,20 @@ class InstanceGroup(stack_resource.StackResource):
         instance_definition = self._get_resource_definition()
         old_resources = grouputils.get_member_definitions(self,
                                                           include_failed=True)
+        # WRS: Detect a scale down.  Issue a vote
+        # If any vote is rejected, set new_resources to be same size as old
+        existing = grouputils.get_members(self)
+        if num_instances < len(existing):
+            LOG.info("WRS downscale detected, vote initiated")
+            for i in range(num_instances, len(existing)):
+                if existing[i].wrs_vote() is False:
+                    LOG.info("WRS downscale blocked by vote")
+                    num_instances = len(existing)
+                    break
+
         definitions = list(template.member_definitions(
             old_resources, instance_definition, num_instances, num_replace,
-            short_id.generate_id))
+            short_id.generate_id, delete_oldest=False))
 
         child_env = environment.get_child_environment(
             self.stack.env,
@@ -369,7 +384,7 @@ class InstanceGroup(stack_resource.StackResource):
     def resize(self, new_capacity):
         """Resize the instance group to the new capacity.
 
-        When shrinking, the oldest instances will be removed.
+        When shrinking, the newest instances will be removed.
         """
         new_template = self._create_template(new_capacity)
         try:

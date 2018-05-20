@@ -950,7 +950,14 @@ class Stack(collections.Mapping):
         self.status = status
         self.status_reason = reason
         self._log_status()
+        # WRS: update the updated_time field whenever any state change occurs
+        # This partially reverts #1193269 related to #1193132
+        self.updated_time = oslo_timeutils.utcnow()
 
+        # WRS.  Add an extra exception log when we encounter FAILED
+        if self.status == self.FAILED:
+            LOG.exception('Setting status to FAILED. reason: %s'
+                          % self.status_reason)
         if self.convergence and action in (
                 self.UPDATE, self.DELETE, self.CREATE,
                 self.ADOPT, self.ROLLBACK, self.RESTORE):
@@ -981,15 +988,19 @@ class Stack(collections.Mapping):
                   'name': self.name,
                   'reason': self.status_reason})
 
+    # WRS: persist update timestamp along with state changes.
+    # contrary to #1193269 and #1193132
     def _persist_state(self):
         """Persist stack state to database"""
         if self.id is None:
             return
+        LOG.info("%s->%s %s" % (six.text_type(self), self.action, self.status))
         stack = stack_object.Stack.get_by_id(self.context, self.id,
                                              eager_load=False)
         if stack is not None:
             values = {'action': self.action,
                       'status': self.status,
+                      'updated_at': self.updated_time,
                       'status_reason': six.text_type(self.status_reason)}
             self._send_notification_and_add_event()
             if self.convergence:
@@ -1740,10 +1751,14 @@ class Stack(collections.Mapping):
                             self.clients.client('keystone').delete_trust(
                                 trust_id)
                     except Exception as ex:
-                        LOG.exception("Error deleting trust")
-                        stack_status = self.FAILED
-                        reason = ("Error deleting trust: %s" %
-                                  six.text_type(ex))
+                        # handle when a tenant is deleted
+                        # We want the admin to be able to delete the stack
+                        # Do not FAIL a delete when we cannot delete a trust.
+                        # We already carry through and delete the credentials
+                        # Without this change, they would need to issue
+                        # an additional stack-delete
+                        LOG.error("Error deleting trust: %s, reason: %s" %
+                                  (trust_id, six.text_type(ex)))
 
             # Delete the stored credentials
             try:

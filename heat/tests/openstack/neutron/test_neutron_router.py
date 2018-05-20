@@ -58,6 +58,7 @@ resources:
   router:
     type: OS::Neutron::Router
     properties:
+      tenant_id: admin
       l3_agent_id: 792ff887-6c85-4a56-b518-23f24fa65581
 '''
 
@@ -183,12 +184,16 @@ class NeutronRouterTest(common.HeatTestCase):
         return rsrc
 
     def test_router_hidden_property_translation(self):
+        # WRS adding tenant_id to this template.  Keystone project constraint
+        self.stub_KeystoneProjectConstraint()
+
         t = template_format.parse(hidden_property_router_template)
         stack = utils.parse_stack(t)
         rsrc = stack['router']
         self.assertIsNone(rsrc.properties['l3_agent_id'])
         self.assertEqual([u'792ff887-6c85-4a56-b518-23f24fa65581'],
                          rsrc.properties['l3_agent_ids'])
+        rsrc.validate
 
     def test_router_validate_distribute_l3_agents(self):
         t = template_format.parse(neutron_template)

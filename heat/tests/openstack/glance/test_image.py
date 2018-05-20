@@ -241,7 +241,7 @@ class GlanceImageTest(common.HeatTestCase):
             name=u'cirros_image',
             protected=False,
             owner=u'test_owner',
-            properties={}
+            properties={'cache_raw': False}
         )
         self.image_tags.update.assert_called_once_with(
             self.my_image.resource_id,
@@ -371,6 +371,7 @@ class GlanceImageTest(common.HeatTestCase):
         images = mock.MagicMock()
         show_value = {
             'name': 'test',
+            'cache_raw': True,
             'disk_format': 'qcow2',
             'container_format': 'bare',
             'protected': False,
@@ -400,6 +401,7 @@ class GlanceImageTest(common.HeatTestCase):
         reality = self.my_image.get_live_state(self.my_image.properties)
         expected = {
             'name': 'test',
+            'cache_raw': True,
             'disk_format': 'qcow2',
             'container_format': 'bare',
             'protected': False,

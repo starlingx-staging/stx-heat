@@ -17,6 +17,8 @@
 from keystoneauth1 import exceptions as keystone_exc
 from keystoneauth1.identity import generic as ks_auth
 from keystoneauth1 import session as ks_session
+
+import keyring
 import mox
 from oslo_config import cfg
 import six
@@ -109,11 +111,15 @@ class KeystonePasswordAuthProtocolTest(common.HeatTestCase):
             password='goodpassword',
             project_id='tenant_id1',
             user_domain_id='domain1',
+            user_domain_name='Default',
             username='user_name1').AndReturn(mock_auth)
 
         m = mock_auth.get_access(mox.IsA(ks_session.Session))
         m.AndReturn(FakeAccessInfo(**TOKEN_V2_RESPONSE))
 
+        self.m.StubOutWithMock(keyring, 'get_password')
+        keyring.get_password(mox.IgnoreArg(),
+                             mox.IgnoreArg()).AndReturn('goodpassword')
         self.m.ReplayAll()
         req = webob.Request.blank('/tenant_id1/')
         req.headers['X_AUTH_USER'] = 'user_name1'
@@ -131,10 +137,15 @@ class KeystonePasswordAuthProtocolTest(common.HeatTestCase):
                          password='goodpassword',
                          project_id='tenant_id1',
                          user_domain_id='domain1',
+                         user_domain_name='Default',
                          username='user_name1').AndReturn(mock_auth)
 
         m = mock_auth.get_access(mox.IsA(ks_session.Session))
         m.AndReturn(FakeAccessInfo(**TOKEN_V3_RESPONSE))
+
+        self.m.StubOutWithMock(keyring, 'get_password')
+        keyring.get_password(mox.IgnoreArg(),
+                             mox.IgnoreArg()).AndReturn('goodpassword')
 
         self.m.ReplayAll()
         req = webob.Request.blank('/tenant_id1/')
@@ -152,9 +163,13 @@ class KeystonePasswordAuthProtocolTest(common.HeatTestCase):
                              password='badpassword',
                              project_id='tenant_id1',
                              user_domain_id='domain1',
+                             user_domain_name='Default',
                              username='user_name1')
         m.AndRaise(keystone_exc.Unauthorized(401))
 
+        self.m.StubOutWithMock(keyring, 'get_password')
+        keyring.get_password(mox.IgnoreArg(),
+                             mox.IgnoreArg()).AndReturn('badpassword')
         self.m.ReplayAll()
         req = webob.Request.blank('/tenant_id1/')
         req.headers['X_AUTH_USER'] = 'user_name1'

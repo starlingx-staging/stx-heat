@@ -23,6 +23,9 @@ from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
+
 stack_template = '''
 heat_template_version: 2013-05-23
 
@@ -70,6 +73,7 @@ resources:
 '''
 
 
+@testcase.skip("Manila not supported in WRS")
 class ManilaSecurityServiceTest(common.HeatTestCase):
 
     def setUp(self):

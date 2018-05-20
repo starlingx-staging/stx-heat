@@ -151,7 +151,7 @@ class BaseServer(stack_user.StackUser):
         elif (self.transport_poll_server_heat(props) or
               self.transport_zaqar_message(props)):
             if self.password is None:
-                self.password = uuid.uuid4().hex
+                self.password = uuid.uuid4().hex + "TiC1*"
             self._create_user()
 
         self._register_access_key()

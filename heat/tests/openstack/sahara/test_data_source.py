@@ -22,6 +22,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 data_source_template = """
 heat_template_version: 2015-10-15
@@ -38,6 +40,7 @@ resources:
 """
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaDataSourceTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaDataSourceTest, self).setUp()

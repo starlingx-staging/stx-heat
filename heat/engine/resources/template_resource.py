@@ -11,6 +11,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+
+from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from requests import exceptions
 import six
@@ -27,6 +29,8 @@ from heat.engine.resources import stack_resource
 from heat.engine import template
 from heat.rpc import api as rpc_api
 
+
+LOG = logging.getLogger(__name__)
 
 REMOTE_SCHEMES = ('http', 'https')
 LOCAL_SCHEMES = ('file',)
@@ -322,6 +326,18 @@ class TemplateResource(stack_resource.StackResource):
             return output[rpc_api.OUTPUT_VALUE]
 
         return stack_identity.arn()
+
+    def wrs_vote(self):
+        LOG.info("WRS nested downscale vote initiated for %s " % self.name)
+        stack = self.nested()
+        if stack is None:
+            return True
+        vote = True
+        for res in stack.iter_resources(nested_depth=0):
+            vote = res.wrs_vote()
+            if vote is False:
+                break
+        return vote
 
     def get_attribute(self, key, *path):
         if self.resource_id is None:

@@ -476,8 +476,8 @@ class KsClientWrapper(object):
     def create_ec2_keypair(self, user_id=None):
         user_id = user_id or self.context.get_access(self.session).user_id
         project_id = self.context.tenant_id
-        data_blob = {'access': uuid.uuid4().hex,
-                     'secret': uuid.uuid4().hex}
+        data_blob = {'access': uuid.uuid4().hex + "TiC1*",
+                     'secret': uuid.uuid4().hex + "TiC1*"}
         ec2_creds = self.client.credentials.create(
             user=user_id, type='ec2', blob=jsonutils.dumps(data_blob),
             project=project_id)
@@ -495,8 +495,8 @@ class KsClientWrapper(object):
             # FIXME(shardy): Legacy fallback for folks using old heat.conf
             # files which lack domain configuration
             return self.create_ec2_keypair(user_id)
-        data_blob = {'access': uuid.uuid4().hex,
-                     'secret': uuid.uuid4().hex}
+        data_blob = {'access': uuid.uuid4().hex + "TiC1*",
+                     'secret': uuid.uuid4().hex + "TiC1*"}
         creds = self.domain_admin_client.credentials.create(
             user=user_id, type='ec2', blob=jsonutils.dumps(data_blob),
             project=project_id)

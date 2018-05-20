@@ -24,6 +24,7 @@ import yaql
 from yaql.language import exceptions
 
 from heat.common import exception
+from heat.common import grouputils
 from heat.common.i18n import _
 from heat.engine import attributes
 from heat.engine import function
@@ -42,6 +43,8 @@ opts = [
                       'expression can take for its evaluation.'))
 ]
 cfg.CONF.register_opts(opts, group='yaql')
+
+LOG = logging.getLogger(__name__)
 
 
 class GetParam(function.Function):
@@ -1641,3 +1644,41 @@ class Contains(function.Function):
                               'a sequence.') % self.fn_name)
 
         return resolved_value in resolved_sequence
+
+
+class GroupIndex(function.Function):
+    """A function for resolving this items group index
+
+    Returns -1 if this item is not indexed in a autoscalinggroup, etc..
+    Returns the index (0, 1, etc..) if it is part of a group
+    Only works for nested stacks at the moment
+    Takes the form::
+        group_index
+    """
+
+    def __init__(self, stack, fn_name, args):
+        super(GroupIndex, self).__init__(stack, fn_name, args)
+
+    # returns a number
+    def find_group_index(self, stk, target):
+        p_proxy = stk.parent_resource
+        if p_proxy is None:
+            return -1
+        p_stk = p_proxy._stack()
+        if target is not None:
+            for res in p_stk.iter_resources():
+                if res.has_nested():
+                    members = grouputils.get_members(res)
+                    count = 0
+                    for memb in members:
+                        # On initial launch, use refid.  Later we use name
+                        if memb.FnGetRefId() == target or memb.name == target:
+                            return count
+                        count += 1
+        # Recurse to parent stack, using parent stack refid as the target
+        return self.find_group_index(p_stk, p_proxy.name)
+
+    def result(self):
+        # First pass has no target
+        r = self.find_group_index(self.stack, None)
+        return str(r)

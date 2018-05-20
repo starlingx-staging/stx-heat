@@ -45,7 +45,7 @@
     "stacks:detail": "rule:deny_stack_user",
     "stacks:export": "rule:deny_stack_user",
     "stacks:generate_template": "rule:deny_stack_user",
-    "stacks:global_index": "rule:deny_everybody",
+    "stacks:global_index": "rule:context_is_admin",
     "stacks:index": "rule:deny_stack_user",
     "stacks:list_resource_types": "rule:deny_stack_user",
     "stacks:list_template_versions": "rule:deny_stack_user",
@@ -70,7 +70,7 @@
     "stacks:list_outputs": "rule:deny_stack_user",
     "stacks:show_output": "rule:deny_stack_user",
 
-    "software_configs:global_index": "rule:deny_everybody",
+    "software_configs:global_index": "rule:context_is_admin",
     "software_configs:index": "rule:deny_stack_user",
     "software_configs:create": "rule:deny_stack_user",
     "software_configs:show": "rule:deny_stack_user",

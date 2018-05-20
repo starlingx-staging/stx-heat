@@ -135,7 +135,7 @@ class HeatWaitConditionHandle(wc_base.BaseWaitConditionHandle):
             self.SIGNAL_TRANSPORT) == self.TOKEN_SIGNAL
 
     def handle_create(self):
-        self.password = uuid.uuid4().hex
+        self.password = uuid.uuid4().hex + "TiC1*"
         super(HeatWaitConditionHandle, self).handle_create()
         if self._signal_transport_token():
             # FIXME(shardy): The assumption here is that token expiry > timeout

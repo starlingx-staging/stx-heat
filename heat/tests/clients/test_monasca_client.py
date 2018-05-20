@@ -19,7 +19,10 @@ from heat.engine.clients.os import monasca as client_plugin
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
 
+
+@testcase.skip("Monasca not supported in WRS")
 class MonascaNotificationConstraintTest(common.HeatTestCase):
     def test_expected_exceptions(self):
         self.assertEqual(
@@ -40,6 +43,7 @@ class MonascaNotificationConstraintTest(common.HeatTestCase):
             'notification_1')
 
 
+@testcase.skip("Monasca not supported in WRS")
 class MonascaClientPluginTest(common.HeatTestCase):
     def test_client(self):
         context = utils.dummy_context()
@@ -48,6 +52,7 @@ class MonascaClientPluginTest(common.HeatTestCase):
         self.assertIsNotNone(client.metrics)
 
 
+@testcase.skip("Monasca not supported in WRS")
 class MonascaClientPluginNotificationTest(common.HeatTestCase):
 
     sample_uuid = '477e8273-60a7-4c41-b683-fdb0bc7cd152'

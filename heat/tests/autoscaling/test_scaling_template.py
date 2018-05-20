@@ -47,8 +47,9 @@ class ResourceTemplatesTest(common.HeatTestCase):
             ('old-id-0', {'type': 'Foo'}),
             ('old-id-1', {'type': 'Foo'})]
         templates = template.member_definitions(old_resources, {'type': 'Bar'},
-                                                1, 2, self.next_id)
-        expected = [('old-id-1', {'type': 'Bar'})]
+                                                1, 2, self.next_id,
+                                                delete_oldest=False)
+        expected = [('old-id-0', {'type': 'Bar'})]
         self.assertEqual(expected, list(templates))
 
     def test_replace_some_units(self):

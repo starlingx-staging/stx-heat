@@ -12,6 +12,7 @@
 #    under the License.
 
 import json
+import keyring
 import uuid
 
 from keystoneauth1 import access as ks_access
@@ -48,6 +49,7 @@ class KeystoneClientTest(common.HeatTestCase):
         self.mock_ks_v3_client = self.m.CreateMock(kc_v3.Client)
         self.mock_ks_v3_client_domain_mngr = self.m.CreateMock(
             kc_v3_domains.DomainManager)
+
         self.m.StubOutWithMock(kc_v3, "Client")
         self.m.StubOutWithMock(ks_auth, 'Password')
         self.m.StubOutWithMock(ks_token_endpoint, 'Token')
@@ -121,7 +123,11 @@ class KeystoneClientTest(common.HeatTestCase):
                                  username='test_username',
                                  password='password',
                                  project_id=project_id or 'test_tenant_id',
+                                 user_domain_name='Default',
                                  user_domain_id='adomain123')
+            self.m.StubOutWithMock(keyring, 'get_password')
+            keyring.get_password(mox.IgnoreArg(),
+                                 mox.IgnoreArg()).AndReturn('password')
 
         elif method == 'trust':
             p = ks_loading.load_auth_from_conf_options(cfg.CONF,
@@ -636,7 +642,6 @@ class KeystoneClientTest(common.HeatTestCase):
     def test_trust_init_fail(self):
 
         """Test consuming a trust when initializing, error scoping."""
-
         self._stubs_auth(method='trust', trust_scoped=False)
         cfg.CONF.set_override('deferred_auth_method', 'trusts')
         self.m.ReplayAll()
@@ -1001,8 +1006,9 @@ class KeystoneClientTest(common.HeatTestCase):
         ctx = utils.dummy_context()
         ctx.trust_id = None
 
-        ex_data = {'access': 'dummy_access',
-                   'secret': 'dummy_secret'}
+        # TiC1* is automatically appended to the uuid hex calls
+        ex_data = {'access': 'dummy_accessTiC1*',
+                   'secret': 'dummy_secretTiC1*'}
         ex_data_json = json.dumps(ex_data)
 
         # stub UUID.hex to match ex_data
@@ -1024,8 +1030,8 @@ class KeystoneClientTest(common.HeatTestCase):
         heat_ks_client = heat_keystoneclient.KeystoneClient(ctx)
         ec2_cred = heat_ks_client.create_ec2_keypair(user_id='atestuser')
         self.assertEqual('123456', ec2_cred.id)
-        self.assertEqual('dummy_access', ec2_cred.access)
-        self.assertEqual('dummy_secret', ec2_cred.secret)
+        self.assertEqual('dummy_accessTiC1*', ec2_cred.access)
+        self.assertEqual('dummy_secretTiC1*', ec2_cred.secret)
 
     def test_create_stack_domain_user_keypair(self):
 
@@ -1037,8 +1043,8 @@ class KeystoneClientTest(common.HeatTestCase):
         self.patchobject(ctx, '_create_auth_plugin')
         ctx.trust_id = None
 
-        ex_data = {'access': 'dummy_access2',
-                   'secret': 'dummy_secret2'}
+        ex_data = {'access': 'dummy_access2TiC1*',
+                   'secret': 'dummy_secret2TiC1*'}
         ex_data_json = json.dumps(ex_data)
 
         # stub UUID.hex to match ex_data
@@ -1061,8 +1067,8 @@ class KeystoneClientTest(common.HeatTestCase):
         ec2_cred = heat_ks_client.create_stack_domain_user_keypair(
             user_id='atestuser2', project_id='aproject')
         self.assertEqual('1234567', ec2_cred.id)
-        self.assertEqual('dummy_access2', ec2_cred.access)
-        self.assertEqual('dummy_secret2', ec2_cred.secret)
+        self.assertEqual('dummy_access2TiC1*', ec2_cred.access)
+        self.assertEqual('dummy_secret2TiC1*', ec2_cred.secret)
 
     def test_create_stack_domain_user_keypair_legacy_fallback(self):
 
@@ -1074,8 +1080,8 @@ class KeystoneClientTest(common.HeatTestCase):
         ctx = utils.dummy_context()
         ctx.trust_id = None
 
-        ex_data = {'access': 'dummy_access2',
-                   'secret': 'dummy_secret2'}
+        ex_data = {'access': 'dummy_access2TiC1*',
+                   'secret': 'dummy_secret2TiC1*'}
         ex_data_json = json.dumps(ex_data)
 
         # stub UUID.hex to match ex_data
@@ -1098,8 +1104,8 @@ class KeystoneClientTest(common.HeatTestCase):
         ec2_cred = heat_ks_client.create_stack_domain_user_keypair(
             user_id='atestuser2', project_id='aproject')
         self.assertEqual('1234567', ec2_cred.id)
-        self.assertEqual('dummy_access2', ec2_cred.access)
-        self.assertEqual('dummy_secret2', ec2_cred.secret)
+        self.assertEqual('dummy_access2TiC1*', ec2_cred.access)
+        self.assertEqual('dummy_secret2TiC1*', ec2_cred.secret)
 
     def test_get_ec2_keypair_id(self):
 

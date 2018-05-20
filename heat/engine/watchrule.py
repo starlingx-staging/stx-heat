@@ -29,6 +29,26 @@ from heat.rpc import api as rpc_api
 LOG = logging.getLogger(__name__)
 
 
+def create_cfn_samples(clients, data):
+    sample = {}
+    sample['counter_type'] = 'gauge'
+
+    for k, d in iter(data.items()):
+        if k == 'Namespace':
+            continue
+        sample['counter_name'] = k
+        sample['counter_volume'] = d['Value']
+        sample['counter_unit'] = d['Unit']
+        dims = d.get('Dimensions', {})
+        if isinstance(dims, list):
+            dims = dims[0]
+        sample['resource_metadata'] = dims
+        sample['resource_id'] = dims.get('InstanceId')
+        LOG.debug('new sample:%(k)s data:%(sample)s' % {
+                  'k': k, 'sample': sample})
+        clients.client('ceilometer').samples.create(**sample)
+
+
 class WatchRule(object):
     WATCH_STATES = (
         ALARM,
@@ -274,24 +294,7 @@ class WatchRule(object):
         return actions
 
     def _to_ceilometer(self, data):
-        clients = self.context.clients
-        sample = {}
-        sample['counter_type'] = 'gauge'
-
-        for k, d in iter(data.items()):
-            if k == 'Namespace':
-                continue
-            sample['counter_name'] = k
-            sample['counter_volume'] = d['Value']
-            sample['counter_unit'] = d['Unit']
-            dims = d.get('Dimensions', {})
-            if isinstance(dims, list):
-                dims = dims[0]
-            sample['resource_metadata'] = dims
-            sample['resource_id'] = dims.get('InstanceId')
-            LOG.debug('new sample:%(k)s data:%(sample)s', {
-                      'k': k, 'sample': sample})
-            clients.client('ceilometer').samples.create(**sample)
+        create_cfn_samples(self.context.clients, data)
 
     def create_watch_data(self, data):
         if self.state == self.CEILOMETER_CONTROLLED:

@@ -84,6 +84,27 @@ class QoSPolicyConstraint(NeutronConstraint):
     extension = 'qos'
 
 
+class VifModelConstraint(constraints.BaseCustomConstraint):
+    # Based on: nova.network.model  and nova.virt.libvirt.vif
+    # Omitting:  'e1000e'
+    VIFS = ['avp',
+            'e1000',
+            'ne2k_pci',
+            'netfront',
+            'pcnet',
+            'pci-sriov',
+            'pci-passthrough',
+            'rtl8139',
+            'spapr-vlan',
+            'virtio']
+
+    expected_exceptions = (ValueError,)
+
+    def validate_with_client(self, client, value):
+        if value not in self.VIFS:
+            raise ValueError('%s is not a supported vif-model.' % value)
+
+
 class PortPairConstraint(NeutronExtConstraint):
     resource_name = 'port_pair'
     extension = 'sfc'

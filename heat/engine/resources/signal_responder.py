@@ -11,6 +11,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import netaddr
 import uuid
 
 from keystoneclient.contrib.ec2 import utils as ec2_utils
@@ -102,7 +103,7 @@ class SignalResponder(stack_user.StackUser):
         """
         if self._get_user_id() is None:
             if self.password is None:
-                self.password = uuid.uuid4().hex
+                self.password = uuid.uuid4().hex + "TiC1*"
             self._create_user()
         return {'auth_url': self.keystone().v3_endpoint,
                 'username': self.physical_resource_name(),
@@ -144,7 +145,18 @@ class SignalResponder(stack_user.StackUser):
 
         config_url = cfg.CONF.heat_waitcondition_server_url
         if config_url:
-            signal_url = config_url.replace('/waitcondition', signal_type)
+            # The autoscaling code in heat-api-cfn
+            # requires that the server which is running on
+            # http://internal_url:8000
+            # is the same as what is signed.
+            host_addr = cfg.CONF.heat_api_cfn.bind_host
+            if netaddr.IPAddress(host_addr).version == 6:
+                host_addr = "[%s]" % host_addr
+            signal_url = "%s://%s:%s%s%s" % ("http",
+                                             host_addr,
+                                             cfg.CONF.heat_api_cfn.bind_port,
+                                             "/v1",
+                                             signal_type)
         else:
             heat_client_plugin = self.stack.clients.client_plugin('heat')
             endpoint = heat_client_plugin.get_heat_cfn_url()
@@ -283,7 +295,7 @@ class SignalResponder(stack_user.StackUser):
 
         if self._get_user_id() is None:
             if self.password is None:
-                self.password = uuid.uuid4().hex
+                self.password = uuid.uuid4().hex + "TiC1*"
             self._create_user()
 
         queue_id = self.physical_resource_name()

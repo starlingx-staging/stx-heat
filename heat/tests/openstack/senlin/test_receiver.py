@@ -23,6 +23,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 receiver_stack_template = """
 heat_template_version: 2016-04-08
@@ -59,6 +61,7 @@ class FakeReceiver(object):
         }
 
 
+@testcase.skip("Senlin not supported in WRS")
 class SenlinReceiverTest(common.HeatTestCase):
     def setUp(self):
         super(SenlinReceiverTest, self).setUp()

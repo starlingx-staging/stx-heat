@@ -264,6 +264,10 @@ class Resource(status.ResourceStatus):
                 self.id = node_data.primary_key
                 self.uuid = node_data.uuid
 
+    def wrs_vote(self):
+        LOG.info("WRS downscale vote accepted for %s " % self.name)
+        return True
+
     def rpc_client(self):
         """Return a client for making engine RPC calls."""
         if not self._rpc_client:
@@ -1028,7 +1032,15 @@ class Resource(status.ResourceStatus):
                     try:
                         yield attr, self.FnGetAtt(*path)
                     except exception.InvalidTemplateAttribute as ita:
+                        # Attribute doesn't exist, so don't store it. Whatever
+                        # tries to access it will get another
+                        # InvalidTemplateAttribute exception at that point
                         LOG.info('%s', ita)
+                    except Exception as exc:
+                        # Store the exception that occurred. It will be
+                        # re-raised when something tries to access it, or when
+                        # we try to serialise the NodeData.
+                        yield attr, exc
 
         load_all = not self.stack.in_convergence_check
         dep_attrs = self.referenced_attrs(stk_defn,
@@ -1428,7 +1440,13 @@ class Resource(status.ResourceStatus):
         after_props = after.properties(self.properties_schema,
                                        self.context)
         self.translate_properties(after_props)
-        self.translate_properties(before_props)
+        try:
+            self.translate_properties(before_props)
+        except Exception:
+            # (removing an output during update)
+            # We can ignore the translation of before_props
+            # This warning typically means the old stack removed something
+            LOG.warning("before_props update failed translate validation")
 
         if (cfg.CONF.observe_on_update or self.converge) and before_props:
             if not self.resource_id:
@@ -1664,7 +1682,9 @@ class Resource(status.ResourceStatus):
         # Allow resume a resource if it's SUSPEND_COMPLETE
         # or RESUME_FAILED or RESUME_COMPLETE. Recommend to check
         # the real state of physical resource in handle_resume()
+        # Allow resume if a successful CHECK was invoked
         if self.state not in ((self.SUSPEND, self.COMPLETE),
+                              (self.CHECK, self.COMPLETE),
                               (self.RESUME, self.FAILED),
                               (self.RESUME, self.COMPLETE)):
             exc = exception.Error(_('State %s invalid for resume')
@@ -1858,6 +1878,7 @@ class Resource(status.ResourceStatus):
         action = self.DELETE
 
         if (self.action, self.status) == (self.DELETE, self.COMPLETE):
+            LOG.info('delete complete for %s', six.text_type(self))
             return
         # No need to delete if the resource has never been created
         if self.action == self.INIT:
@@ -2174,6 +2195,7 @@ class Resource(status.ResourceStatus):
 
     def state_set(self, action, status, reason="state changed",
                   lock=LOCK_NONE):
+        LOG.info("%s -> %s %s" % (six.text_type(self), action, status))
         if action not in self.ACTIONS:
             raise ValueError(_("Invalid action %s") % action)
 

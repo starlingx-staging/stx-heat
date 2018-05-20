@@ -25,6 +25,7 @@ from heat.tests import common
 from heat.tests import utils
 
 from oslo_serialization import jsonutils
+from testtools import testcase
 
 try:
     from zaqarclient.transport.errors import ResourceNotFound  # noqa
@@ -92,6 +93,7 @@ class FakeSubscription(object):
         pass
 
 
+@testcase.skip("Mistral not supported in WRS")
 @mock.patch.object(resource.Resource, "client")
 class ZaqarSubscriptionTest(common.HeatTestCase):
     def setUp(self):
@@ -329,6 +331,7 @@ class JsonString(object):
         return str(self)
 
 
+@testcase.skip("Mistral not supported in WRS")
 @mock.patch.object(resource.Resource, "client")
 class ZaqarMistralTriggerTest(common.HeatTestCase):
     def setUp(self):

@@ -23,6 +23,8 @@ from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 sample_template = {
     'heat_template_version': '2015-10-15',
@@ -42,6 +44,7 @@ sample_template = {
 RESOURCE_TYPE = 'OS::Monasca::Notification'
 
 
+@testcase.skip("Monasca not supported in WRS")
 class MonascaNotificationTest(common.HeatTestCase):
 
     def setUp(self):

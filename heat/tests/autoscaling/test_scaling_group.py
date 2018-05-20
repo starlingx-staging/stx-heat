@@ -294,6 +294,9 @@ class TestGroupAdjust(common.HeatTestCase):
         self.assertIsNone(self.group.validate())
 
     def test_scaling_policy_cooldown_toosoon(self):
+        """If _is_scaling_allowed() returns False don't progress."""
+        # WRS will abort if size unchanged
+        # change get_size to resize to make test pass
         dont_call = self.patchobject(self.group, 'resize')
         self.patchobject(self.group, '_check_scaling_allowed',
                          side_effect=resource.NoActionRequired)

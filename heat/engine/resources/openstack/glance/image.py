@@ -18,6 +18,12 @@ from heat.engine import properties
 from heat.engine import resource
 from heat.engine import support
 
+from oslo_log import log as logging
+
+LOG = logging.getLogger(__name__)
+
+(LOCAL_FILE_PREFIX) = ('file://')
+
 
 class GlanceImage(resource.Resource):
     """A resource managing images in Glance.
@@ -37,12 +43,12 @@ class GlanceImage(resource.Resource):
     PROPERTIES = (
         NAME, IMAGE_ID, IS_PUBLIC, MIN_DISK, MIN_RAM, PROTECTED,
         DISK_FORMAT, CONTAINER_FORMAT, LOCATION, TAGS, EXTRA_PROPERTIES,
-        ARCHITECTURE, KERNEL_ID, OS_DISTRO, OWNER, RAMDISK_ID
+        ARCHITECTURE, KERNEL_ID, OS_DISTRO, OWNER, RAMDISK_ID, CACHE_RAW
     ) = (
         'name', 'id', 'is_public', 'min_disk', 'min_ram', 'protected',
         'disk_format', 'container_format', 'location', 'tags',
         'extra_properties', 'architecture', 'kernel_id', 'os_distro',
-        'owner', 'ramdisk_id'
+        'owner', 'ramdisk_id', 'cache_raw'
     )
 
     glance_id_pattern = ('^([0-9a-fA-F]){8}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}'
@@ -114,7 +120,9 @@ class GlanceImage(resource.Resource):
             properties.Schema.STRING,
             _('URL where the data for this image already resides. For '
               'example, if the image data is stored in swift, you could '
-              'specify "swift://example.com/container/obj".'),
+              'specify "swift://example.com/container/obj". '
+              'WRS:extension - add support for local file. For example, '
+              'to load /root/guest.img specify "file:///root/guest.img".'),
             required=True,
         ),
         TAGS: properties.Schema(
@@ -168,12 +176,22 @@ class GlanceImage(resource.Resource):
             constraints=[
                 constraints.AllowedPattern(glance_id_pattern)
             ]
-        )
+        ),
+        CACHE_RAW: properties.Schema(
+            properties.Schema.BOOLEAN,
+            _('Whether to cache this image on import. '
+              'Default value is False.'),
+            default=False,
+        ),
     }
 
     default_client_name = 'glance'
 
     entity = 'images'
+
+    # WRS:extension  Return contents of the local file
+    def _load_local_file(self, file_location):
+        return open(file_location, 'rb')
 
     def handle_create(self):
         args = dict((k, v) for k, v in self.properties.items()
@@ -185,6 +203,18 @@ class GlanceImage(resource.Resource):
         kernel_id = args.pop(self.KERNEL_ID, None)
         os_distro = args.pop(self.OS_DISTRO, None)
         ramdisk_id = args.pop(self.RAMDISK_ID, None)
+        # WRS:extension - add support for local file
+        if args[self.LOCATION].startswith(LOCAL_FILE_PREFIX):
+            args['data'] = self._load_local_file(
+                args[self.LOCATION][len(LOCAL_FILE_PREFIX):])
+            args.pop(self.LOCATION)
+
+        # cache_raw must be passed in a sub-property
+        cache_raw = args.pop(self.CACHE_RAW, False)
+        if cache_raw:
+            args['properties'][self.CACHE_RAW] = cache_raw
+        else:
+            args['properties'][self.CACHE_RAW] = cache_raw
 
         image_id = self.client(version=self.client_plugin().V1).images.create(
             **args).id

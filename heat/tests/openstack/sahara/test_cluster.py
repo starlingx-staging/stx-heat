@@ -27,6 +27,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 cluster_stack_template = """
 heat_template_version: 2013-05-23
@@ -58,6 +60,7 @@ class FakeCluster(object):
         self.to_dict = lambda: {"cluster": "info"}
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaClusterTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaClusterTest, self).setUp()

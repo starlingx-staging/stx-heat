@@ -21,6 +21,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 job_template = """
 heat_template_version: newton
@@ -45,6 +47,7 @@ resources:
 """
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaJobTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaJobTest, self).setUp()

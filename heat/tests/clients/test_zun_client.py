@@ -13,7 +13,10 @@
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
 
+
+@testcase.skip("Zun not supported in WRS")
 class ZunClientPluginTest(common.HeatTestCase):
 
     def test_create(self):

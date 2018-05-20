@@ -16,6 +16,7 @@ templates/cloudformation-examples
 .coverage
 .coverage.*
 cover
+coverage.xml
 .testrepository
 .project
 .pydevproject

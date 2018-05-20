@@ -36,6 +36,7 @@ class BaseVolumeTest(common.HeatTestCase):
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'create')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'get')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'delete')
+        self.m.StubOutWithMock(self.cinder_fc.volumes, 'force_delete')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'extend')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'update')
         self.m.StubOutWithMock(self.cinder_fc.volumes, 'update_all_metadata')
@@ -47,7 +48,7 @@ class BaseVolumeTest(common.HeatTestCase):
     def _mock_delete_volume(self, fv):
         self.cinder_fc.volumes.get(fv.id).AndReturn(
             FakeVolume('available'))
-        self.cinder_fc.volumes.delete(fv.id).AndReturn(True)
+        self.cinder_fc.volumes.force_delete(fv.id).AndReturn(True)
         self.cinder_fc.volumes.get(fv.id).AndRaise(
             cinder_exp.NotFound('Not found'))
 
@@ -114,6 +115,8 @@ class FakeVolume(object):
             setattr(self, key, value)
         if 'id' not in attrs:
             self.id = self._ID
+        if 'metadata' not in attrs:
+            self.metadata = {}
 
 
 class FakeBackup(FakeVolume):

@@ -22,7 +22,10 @@ from heat.engine.clients.os import sahara
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
 
+
+@testcase.skip("Sahara not supported in WRS")
 class SaharaUtilsTest(common.HeatTestCase):
     """Basic tests :module:'heat.engine.resources.clients.os.sahara'."""
 
@@ -156,6 +159,7 @@ class SaharaUtilsTest(common.HeatTestCase):
         self.sahara_client.plugins.get.assert_has_calls(calls)
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaConstraintsTest(common.HeatTestCase):
     scenarios = [
         ('JobType', dict(

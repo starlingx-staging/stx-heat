@@ -23,6 +23,9 @@ from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
+
 external_resource_template = """
 heat_template_version: ocata
 resources:
@@ -53,6 +56,7 @@ class FakeExecution(object):
         self.state = state
 
 
+@testcase.skip("Mistral not supported in WRS")
 class TestMistralExternalResource(common.HeatTestCase):
     def setUp(self):
         super(TestMistralExternalResource, self).setUp()

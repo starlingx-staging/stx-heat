@@ -18,7 +18,10 @@ from heat.tests import common
 from heat.tests import utils
 from senlinclient.common import exc
 
+from testtools import testcase
 
+
+@testcase.skip("Senlin not supported in WRS")
 class SenlinClientPluginTest(common.HeatTestCase):
     def setUp(self):
         super(SenlinClientPluginTest, self).setUp()
@@ -69,6 +72,7 @@ class SenlinClientPluginTest(common.HeatTestCase):
         mock_get.assert_called_once_with('fake_policy')
 
 
+@testcase.skip("Senlin not supported in WRS")
 class ProfileConstraintTest(common.HeatTestCase):
 
     def setUp(self):
@@ -93,6 +97,7 @@ class ProfileConstraintTest(common.HeatTestCase):
         self.assertFalse(self.constraint.validate("PROFILE_ID", self.ctx))
 
 
+@testcase.skip("Senlin not supported in WRS")
 class ClusterConstraintTest(common.HeatTestCase):
 
     def setUp(self):
@@ -117,6 +122,7 @@ class ClusterConstraintTest(common.HeatTestCase):
         self.assertFalse(self.constraint.validate("CLUSTER_ID", self.ctx))
 
 
+@testcase.skip("Senlin not supported in WRS")
 class PolicyConstraintTest(common.HeatTestCase):
 
     def setUp(self):
@@ -141,6 +147,7 @@ class PolicyConstraintTest(common.HeatTestCase):
         self.assertFalse(self.constraint.validate("POLICY_ID", self.ctx))
 
 
+@testcase.skip("Senlin not supported in WRS")
 class ProfileTypeConstraintTest(common.HeatTestCase):
 
     def setUp(self):
@@ -166,6 +173,7 @@ class ProfileTypeConstraintTest(common.HeatTestCase):
                                                   self.ctx))
 
 
+@testcase.skip("Senlin not supported in WRS")
 class PolicyTypeConstraintTest(common.HeatTestCase):
 
     def setUp(self):

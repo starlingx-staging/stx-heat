@@ -325,7 +325,14 @@ class Subnet(neutron.NeutronResource):
                 [self.SEGMENT],
                 client_plugin=self.client_plugin('openstack'),
                 finder='find_network_segment'
-            )
+            ),
+            translation.TranslationRule(
+                props,
+                translation.TranslationRule.RESOLVE,
+                [self.TENANT_ID],
+                client_plugin=self.client_plugin('keystone'),
+                finder='get_project_id'
+            ),
         ]
 
     @classmethod

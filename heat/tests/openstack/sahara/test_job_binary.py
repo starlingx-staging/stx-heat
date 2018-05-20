@@ -23,6 +23,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 job_binary_template = """
 heat_template_version: 2015-10-15
@@ -36,6 +38,7 @@ resources:
 """
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaJobBinaryTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaJobBinaryTest, self).setUp()

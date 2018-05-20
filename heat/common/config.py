@@ -33,6 +33,17 @@ paste_deploy_opts = [
     cfg.StrOpt('api_paste_config', default="api-paste.ini",
                help=_("The API paste config file to use."))]
 
+expirer_group = cfg.OptGroup('expirer')
+expirer_opts = [
+    cfg.IntOpt('max_events',
+               default=30000,
+               help=_('Max number of events to keep.'))]
+
+cooldown_group = cfg.OptGroup('cooldown')
+cooldown_opts = [
+    cfg.IntOpt('scaling_wait_time',
+               default=900,
+               help=_('Wait time in seconds to clear scaling_in_progress'))]
 
 service_opts = [
     cfg.IntOpt('periodic_interval',
@@ -57,6 +68,11 @@ service_opts = [
                       'SSL is used.')),
     cfg.StrOpt('region_name_for_services',
                help=_('Default region name used to get services endpoints.')),
+    cfg.StrOpt('region_name_for_shared_services',
+               help=_('Default region name for shared services endpoints.')),
+    cfg.ListOpt('shared_services_types',
+                default=['image', 'volume', 'volumev2'],
+                help=_('The shared services located in the other region.')),
     cfg.StrOpt('heat_stack_user_role',
                default="heat_stack_user",
                help=_('Keystone role for heat template-defined users.')),
@@ -88,6 +104,10 @@ service_opts = [
                       'the host, whichever is greater.'))]
 
 engine_opts = [
+    cfg.BoolOpt('disable_rollback_nested_stack_updates',
+                default=False,
+                help=_('disable_rollback value when performing update'
+                       ' for nested stacks.')),
     cfg.ListOpt('plugin_dirs',
                 default=['/usr/lib64/heat', '/usr/lib/heat',
                          '/usr/local/lib/heat', '/usr/local/lib64/heat'],
@@ -404,6 +424,8 @@ def list_opts():
     yield revision_group.name, revision_opts
     yield volumes_group.name, volumes_opts
     yield profiler.list_opts()[0]
+    yield expirer_group.name, expirer_opts
+    yield cooldown_group.name, cooldown_opts
     yield 'clients', default_clients_opts
 
     for client in ('aodh', 'barbican', 'ceilometer', 'cinder', 'designate',
@@ -424,6 +446,8 @@ cfg.CONF.register_group(paste_deploy_group)
 cfg.CONF.register_group(auth_password_group)
 cfg.CONF.register_group(revision_group)
 profiler.set_defaults(cfg.CONF)
+cfg.CONF.register_group(expirer_group)
+cfg.CONF.register_group(cooldown_group)
 
 for group, opts in list_opts():
     cfg.CONF.register_opts(opts, group=group)

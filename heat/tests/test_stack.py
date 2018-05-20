@@ -741,7 +741,8 @@ class StackTest(common.HeatTestCase):
         self.stack.create()
         self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
                          self.stack.state)
-        self.assertIsNone(self.stack.updated_time)
+        # WRS: updated_time will now be set as part of every state change
+        # self.assertIsNone(self.stack.updated_time)
 
         self.stack.suspend()
 

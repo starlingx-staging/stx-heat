@@ -305,6 +305,19 @@ class ResourceDefinition(object):
         props.update_translation(self._rules, self._client_resolve)
         return props
 
+    def set_group_index(self, i):
+        if self._metadata is None:
+            self._metadata = {}
+        self._metadata['wrs-groupindex'] = str(i)
+        # WRS: need to clear the rendering field otherwise the old
+        # metadata used by render_hot gets re-used
+        self._rendering = None
+
+    def get_group_index(self):
+        if self._metadata is None:
+            return "-1"
+        return self._metadata.get('wrs-groupindex', "-1")
+
     def metadata(self):
         """Return the resource metadata."""
         return function.resolve(self._metadata) or {}

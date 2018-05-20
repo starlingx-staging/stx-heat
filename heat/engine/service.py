@@ -17,7 +17,9 @@ import functools
 import itertools
 import os
 import pydoc
+import signal
 import socket
+import sys
 
 import eventlet
 from oslo_config import cfg
@@ -178,6 +180,10 @@ class ThreadGroupManager(object):
         :param kwargs: Keyword-args to be passed to func
 
         """
+        def _force_exit(*args):
+            LOG.info('Graceful exit timeout exceeded, forcing exit.')
+            os._exit(-1)
+
         def release(gt):
             """Callback function that will be passed to GreenThread.link().
 
@@ -190,7 +196,14 @@ class ThreadGroupManager(object):
                                          stack.UPDATE)):
                 stack.persist_state_and_release_lock(lock.engine_id)
             else:
-                lock.release()
+                try:
+                    lock.release()
+                except Exception:
+                    LOG.exception("FATAL. Failed stack_lock release. Exiting")
+                    # allow up to 1 second for sys.exit to gracefully shutdown
+                    signal.signal(signal.SIGALRM, _force_exit)
+                    signal.alarm(1)
+                    sys.exit(-1)
 
         # Link to self to allow the stack to run tasks
         stack.thread_group_mgr = self
@@ -666,11 +679,14 @@ class EngineService(service.ServiceBase):
         if stack_object.Stack.get_by_name(cnxt, stack_name):
             raise exception.StackExists(stack_name=stack_name)
 
-        tenant_limit = cfg.CONF.max_stacks_per_tenant
-        if stack_object.Stack.count_all(cnxt) >= tenant_limit:
-            message = _("You have reached the maximum stacks per tenant, "
-                        "%d. Please delete some stacks.") % tenant_limit
-            raise exception.RequestLimitExceeded(message=message)
+        # Do not do a stack limit check for admin
+        # since admin can see all stacks.
+        if not cnxt.is_admin:
+            tenant_limit = cfg.CONF.max_stacks_per_tenant
+            if stack_object.Stack.count_all(cnxt) >= tenant_limit:
+                message = _("You have reached the maximum stacks per tenant, "
+                            "%d. Please delete some stacks.") % tenant_limit
+                raise exception.RequestLimitExceeded(message=message)
         self._validate_template(cnxt, parsed_template)
 
     def _validate_template(self, cnxt, parsed_template):
@@ -1408,11 +1424,11 @@ class EngineService(service.ServiceBase):
         """
 
         st = self._get_stack(cnxt, stack_identity)
+        LOG.info('Deleting stack %s', st.name)
         if (st.status == parser.Stack.COMPLETE and
                 st.action == parser.Stack.DELETE):
             raise exception.EntityNotFound(entity='Stack', name=st.name)
 
-        LOG.info('Deleting stack %s', st.name)
         stack = parser.Stack.load(cnxt, stack=st)
         self.resource_enforcer.enforce_stack(stack)
 
@@ -1469,7 +1485,11 @@ class EngineService(service.ServiceBase):
             watch = timeutils.StopWatch(cfg.CONF.error_wait_time + 10)
             watch.start()
 
-            while not watch.expired():
+            LOG.info("Delaying up to %d seconds for cancel to complete" %
+                     (cfg.CONF.error_wait_time + 10))
+            lock_is_valid = True
+
+            while not watch.expired() and lock_is_valid:
                 LOG.debug('Waiting for stack cancel to complete: %s',
                           stack.name)
                 with lock.try_thread_lock() as acquire_result:
@@ -1480,7 +1500,13 @@ class EngineService(service.ServiceBase):
                         self.thread_group_mgr.start_with_acquired_lock(
                             stack, lock, stack.delete)
                         return
+                    elif not service_utils.engine_alive(cnxt, acquire_result):
+                        # The lock is stale.  break out early
+                        LOG.info("Potential stale lock detected")
+                        lock_is_valid = False
                 eventlet.sleep(1.0)
+
+            LOG.info("Delay expired for cancel")
 
             if acquire_result == self.engine_id:
                 # cancel didn't finish in time, attempt a stop instead
@@ -1497,6 +1523,8 @@ class EngineService(service.ServiceBase):
                 else:
                     raise exception.StopActionFailed(
                         stack_name=stack.name, engine_id=acquire_result)
+            else:
+                LOG.info("Inactive lock detected for %s" % acquire_result)
 
             stack = reload()
             # do the actual delete in a locked task
@@ -2172,6 +2200,13 @@ class EngineService(service.ServiceBase):
         This could be used by CloudWatch and WaitConditions
         and treat HA service events like any other CloudWatch.
         """
+        # WRS: If cfn-push-stats is sending samples without specifying
+        # a watch_name it means we simply wish to store the ceilometer
+        # sample in the database
+        if watch_name is None:
+            watchrule.create_cfn_samples(cnxt.clients, stats_data)
+            return stats_data
+
         def get_matching_watches():
             if watch_name:
                 yield watchrule.WatchRule.load(cnxt, watch_name)

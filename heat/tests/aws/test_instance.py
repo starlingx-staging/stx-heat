@@ -686,7 +686,8 @@ class InstancesTest(common.HeatTestCase):
         d2 = copy.deepcopy(d1)
         if vm_delete_status == 'DELETED':
             d2['server']['status'] = vm_delete_status
-            get().AndReturn((200, d2))
+            # get().AndReturn((200, d2))
+            get().AndRaise(fakes_nova.fake_exception())
         else:
             get().AndRaise(fakes_nova.fake_exception())
 
@@ -886,7 +887,7 @@ class InstancesTest(common.HeatTestCase):
             'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach('34b752ec-14de-416a-8722-9531015e04a5',
-                                       None, None).AndReturn(None)
+                                       None, None, None).AndReturn(None)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.update, after, before)()
@@ -964,7 +965,7 @@ class InstancesTest(common.HeatTestCase):
         self.fc.servers.get('1234').MultipleTimes().AndReturn(return_server)
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
-                                       None, None).AndReturn(None)
+                                       None, None, None).AndReturn(None)
 
         self.m.ReplayAll()
 
@@ -1006,9 +1007,11 @@ class InstancesTest(common.HeatTestCase):
             'ea29f957-cd35-4364-98fb-57ce9732c10d').AndReturn(None)
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach('d1e9c73c-04fe-4e9e-983c-d5ef94cd1a46',
-                                       None, None).InAnyOrder().AndReturn(None)
+                                       None, None,
+                                       None).InAnyOrder().AndReturn(None)
         return_server.interface_attach('34b752ec-14de-416a-8722-9531015e04a5',
-                                       None, None).InAnyOrder().AndReturn(None)
+                                       None, None,
+                                       None).InAnyOrder().AndReturn(None)
 
         self.m.ReplayAll()
 
@@ -1048,9 +1051,9 @@ class InstancesTest(common.HeatTestCase):
             'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
         self.m.StubOutWithMock(return_server, 'interface_attach')
         return_server.interface_attach('ea29f957-cd35-4364-98fb-57ce9732c10d',
-                                       None, None).AndReturn(None)
+                                       None, None, None).AndReturn(None)
         return_server.interface_attach('34b752ec-14de-416a-8722-9531015e04a5',
-                                       None, None).AndReturn(None)
+                                       None, None, None).AndReturn(None)
 
         self.m.ReplayAll()
 
@@ -1084,7 +1087,7 @@ class InstancesTest(common.HeatTestCase):
         return_server.interface_detach(
             'd1e9c73c-04fe-4e9e-983c-d5ef94cd1a46').AndReturn(None)
         self.m.StubOutWithMock(return_server, 'interface_attach')
-        return_server.interface_attach(None, None, None).AndReturn(None)
+        return_server.interface_attach(None, None, None, None).AndReturn(None)
         self.m.ReplayAll()
 
         scheduler.TaskRunner(instance.update, update_template)()
@@ -1139,7 +1142,7 @@ class InstancesTest(common.HeatTestCase):
             self.m.StubOutWithMock(return_server, 'interface_attach')
             return_server.interface_attach(
                 'ea29f957-cd35-4364-98fb-57ce9732c10d',
-                None, None).AndReturn(None)
+                None, None, None).AndReturn(None)
 
         self.m.ReplayAll()
 
@@ -1217,7 +1220,7 @@ class InstancesTest(common.HeatTestCase):
         d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
         d2 = copy.deepcopy(d1)
         d1['server']['status'] = 'ACTIVE'
-        d2['server']['status'] = 'SUSPENDED'
+        d2['server']['status'] = 'PAUSED'
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234
         get().AndReturn((200, d1))
@@ -1254,7 +1257,7 @@ class InstancesTest(common.HeatTestCase):
 
         d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
         d2 = copy.deepcopy(d1)
-        d1['server']['status'] = 'SUSPENDED'
+        d1['server']['status'] = 'PAUSED'
         d2['server']['status'] = 'ACTIVE'
         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
         get = self.fc.client.get_servers_1234

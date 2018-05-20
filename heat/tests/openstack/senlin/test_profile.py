@@ -22,6 +22,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 profile_stack_template = """
 heat_template_version: 2016-04-08
@@ -64,6 +66,7 @@ class FakeProfile(object):
         self.spec = spec or profile_spec
 
 
+@testcase.skip("Senlin not supported in WRS")
 class SenlinProfileTest(common.HeatTestCase):
     def setUp(self):
         super(SenlinProfileTest, self).setUp()

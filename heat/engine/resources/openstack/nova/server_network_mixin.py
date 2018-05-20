@@ -251,6 +251,10 @@ class ServerNetworkMixin(object):
                             net.get(self.NETWORK_FIXED_IP)})
                 self._floating_ip_neutron_associate(
                     net.get(self.NETWORK_FLOATING_IP), floating_ip_data)
+            if net.get(self.NETWORK_VIF_MODEL):
+                nic_info['vif-model'] = net[self.NETWORK_VIF_MODEL]
+            if net.get(self.NETWORK_VIF_PCI_ADDRESS):
+                nic_info['vif-pci-address'] = net[self.NETWORK_VIF_PCI_ADDRESS]
 
             if net.get(self.NIC_TAG):
                 nic_info[self.NIC_TAG] = net.get(self.NIC_TAG)
@@ -444,7 +448,8 @@ class ServerNetworkMixin(object):
             for idx, net in enumerate(new_nets):
                 handler_kwargs = {'port_id': None,
                                   'net_id': None,
-                                  'fip': None}
+                                  'fip': None,
+                                  'vif_model': net.get(self.NETWORK_VIF_MODEL)}
 
                 if net.get(self.NETWORK_PORT):
                     handler_kwargs['port_id'] = net.get(self.NETWORK_PORT)

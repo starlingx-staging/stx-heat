@@ -29,9 +29,11 @@ from heat.engine.resources.openstack.neutron import subnet
 from heat.engine.resources.openstack.nova import server_network_mixin
 from heat.engine.resources import scheduler_hints as sh
 from heat.engine.resources import server_base
+from heat.engine.resources.wr import enhancements as wrs
 from heat.engine import support
 from heat.engine import translation
 from heat.rpc import api as rpc_api
+
 
 cfg.CONF.import_opt('default_software_config_transport', 'heat.common.config')
 cfg.CONF.import_opt('default_user_data_format', 'heat.common.config')
@@ -40,12 +42,16 @@ LOG = logging.getLogger(__name__)
 
 
 class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+             wrs.NameEnhanceMixin,
              server_network_mixin.ServerNetworkMixin):
     """A resource for managing Nova instances.
 
     A Server resource manages the running virtual machine instance within an
     OpenStack cloud.
     """
+
+    # VIF pci pattern is  0000:<bus>:<slot>.0
+    VIF_PCI_PATTERN = '0000:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]\.0'
 
     PROPERTIES = (
         NAME, IMAGE, BLOCK_DEVICE_MAPPING, BLOCK_DEVICE_MAPPING_V2,
@@ -110,10 +116,12 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
     _NETWORK_KEYS = (
         NETWORK_UUID, NETWORK_ID, NETWORK_FIXED_IP, NETWORK_PORT,
         NETWORK_SUBNET, NETWORK_PORT_EXTRA, NETWORK_FLOATING_IP,
+        NETWORK_VIF_MODEL, NETWORK_VIF_PCI_ADDRESS,
         ALLOCATE_NETWORK, NIC_TAG,
     ) = (
         'uuid', 'network', 'fixed_ip', 'port',
         'subnet', 'port_extra_properties', 'floating_ip',
+        'vif-model', 'vif-pci-address',
         'allocate_network', 'tag',
     )
 
@@ -479,6 +487,20 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
                         _('ID of the floating IP to associate.'),
                         support_status=support.SupportStatus(version='6.0.0')
                     ),
+                    NETWORK_VIF_MODEL: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Vif model to use for this network interface.'),
+                        constraints=[
+                            constraints.CustomConstraint('neutron.vifmodel')
+                        ]
+                    ),
+                    NETWORK_VIF_PCI_ADDRESS: properties.Schema(
+                        properties.Schema.STRING,
+                        _('Vif PCI Addr 0000:<bus>:<slot>.0 for interface.'),
+                        constraints=[
+                            constraints.AllowedPattern(VIF_PCI_PATTERN)
+                        ]
+                    ),
                     NIC_TAG: properties.Schema(
                         properties.Schema.STRING,
                         _('Port tag. Heat ignores any update on this property '
@@ -540,7 +562,7 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
               'ignoring it or by replacing the entire server.'),
             default='REPLACE',
             constraints=[
-                constraints.AllowedValues(['REPLACE', 'IGNORE']),
+                constraints.AllowedValues(['REPLACE', 'IGNORE', 'REBUILD']),
             ],
             support_status=support.SupportStatus(version='6.0.0'),
             update_allowed=True
@@ -762,6 +784,26 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
             self._register_access_key()
         self.default_collectors = ['ec2']
 
+    def _server_name(self):
+        name = self.properties[self.NAME]
+        if name:
+            return self._enhance_name(name)
+
+        return self.physical_resource_name()
+
+    def wrs_vote(self):
+        if self.resource_id is None:
+            return True
+        try:
+            server = self.nova().servers.get(self.resource_id)
+            vote = self.client_plugin().send_vote(server)
+            LOG.info("WRS server %s vote result: %s" % (self.name, str(vote)))
+        except Exception as e:
+            self.client_plugin().ignore_not_found(e)
+            LOG.warning("WRS server %s vote allowed" % self.name)
+            vote = True
+        return vote
+
     def _config_drive(self):
         # This method is overridden by the derived CloudServer resource
         return self.properties[self.CONFIG_DRIVE]
@@ -780,6 +822,13 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
             return sc[rpc_api.SOFTWARE_CONFIG_CONFIG]
         return ud_content
 
+    def build_userdata(self, metadata, ud_content, user_data_format):
+        return self.client_plugin().build_userdata(
+            metadata,
+            ud_content,
+            instance_user=None,
+            user_data_format=user_data_format)
+
     def handle_create(self):
         security_groups = self.properties[self.SECURITY_GROUPS]
 
@@ -796,11 +845,7 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
             self._create_transport_credentials(self.properties)
             self._populate_deployments_metadata(metadata, self.properties)
 
-        userdata = self.client_plugin().build_userdata(
-            metadata,
-            ud_content,
-            instance_user=None,
-            user_data_format=user_data_format)
+        userdata = self.build_userdata(metadata, ud_content, user_data_format)
 
         availability_zone = self.properties[self.AVAILABILITY_ZONE]
         instance_meta = self.properties[self.METADATA]
@@ -881,7 +926,10 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
     def handle_check(self):
         server = self.client().servers.get(self.resource_id)
         status = self.client_plugin().get_status(server)
-        checks = [{'attr': 'status', 'expected': 'ACTIVE', 'current': status}]
+        # If the stack has been suspended, the expected attribute is PAUSED
+        # We cannot use the self.state since check may be invoked repeatedly
+        statuses = ['ACTIVE', 'PAUSED']
+        checks = [{'attr': 'status', 'expected': statuses, 'current': status}]
         self._verify_check_conditions(checks)
 
     def get_live_resource_data(self):
@@ -1205,6 +1253,13 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
         personality_files = after_props[self.PERSONALITY]
 
         image = after_props[self.IMAGE]
+        # WRS
+        # If we are triggering a rebuild due to userdata
+        # but we are booting off of a volume so no image
+        # information is present
+        if image is None:
+            LOG.warning("No image found, getting image from volume data")
+            image = self._get_image_from_volume()
         preserve_ephemeral = (
             image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
         password = after_props[self.ADMIN_PASS]
@@ -1212,11 +1267,52 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
                   'preserve_ephemeral': preserve_ephemeral,
                   'meta': instance_meta,
                   'files': personality_files}
+
+        # WRS: pass userdata to rebuild if REBUILD policy selected
+        ud_update_policy = after_props[self.USER_DATA_UPDATE_POLICY]
+        if ud_update_policy == 'REBUILD':
+            # user data can be an empty string, but not None
+            ud_content = after_props[self.USER_DATA]
+            user_data_format = after_props[self.USER_DATA_FORMAT]
+            # Only pass new userdata if it is not None
+            if ud_content is not None:
+                kwargs['userdata'] = self.build_userdata(self.metadata_get(),
+                                                         ud_content,
+                                                         user_data_format)
         prg = progress.ServerUpdateProgress(self.resource_id,
                                             'rebuild',
                                             handler_extra={'args': (image,),
                                                            'kwargs': kwargs})
         return prg
+
+    def _get_image_from_volume(self):
+        volume_id = ""
+        bdm = self.properties[self.BLOCK_DEVICE_MAPPING]
+        if bdm is not None:
+            for mpg in bdm:
+                device_name = mpg[self.BLOCK_DEVICE_MAPPING_DEVICE_NAME]
+                if device_name == 'vda':
+                    volume_id = mpg.get(self.BLOCK_DEVICE_MAPPING_VOLUME_ID)
+                    break
+        bdm_v2 = self.properties[self.BLOCK_DEVICE_MAPPING_V2]
+        if bdm_v2 is not None:
+            for mpg in bdm_v2:
+                device_name = mpg[self.BLOCK_DEVICE_MAPPING_DEVICE_NAME]
+                if device_name == 'vda':
+                    image_id = mpg.get(self.BLOCK_DEVICE_MAPPING_IMAGE_ID)
+                    if image_id is not None:
+                        return image_id
+                    volume_id = mpg.get(self.BLOCK_DEVICE_MAPPING_VOLUME_ID)
+                    break
+        if volume_id == "":
+            LOG.error("No bootable volume found")
+            raise exception.Error("No rebuildable boot device found")
+        cind = self.client_plugin('cinder')
+        volume = cind.get_volume(volume_id)
+        image_id = ""
+        if volume is not None:
+            image_id = volume.__dict__['volume_image_metadata']['image_id']
+        return image_id
 
     def _update_networks(self, server, after_props):
         updaters = []
@@ -1247,6 +1343,40 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
             )
 
         return updaters
+
+    # WRS detect if server deleted
+    def needs_replace(self, after_props):
+        """Mandatory replace for NotFound."""
+        try:
+            self.nova().servers.get(self.resource_id)
+        except Exception as ex:
+            if self.client_plugin().is_not_found(ex):
+                LOG.warning("Server Not Found %s" % str(self.resource_id))
+                return True
+            # Ignore other exceptions and behave like upstream code
+        return super(Server, self).needs_replace(after_props)
+
+    # Cloned from resource.py.  Allow REBUILD when FAILED
+    def _needs_update(self, after, before, after_props, before_props,
+                      prev_resource, check_init_complete=True):
+        if (self.stack.convergence and (
+                self.action, self.status) == (self.DELETE, self.COMPLETE)):
+            raise exception.UpdateReplace(self)
+
+        if check_init_complete and (self.action == self.INIT
+                                    and self.status == self.COMPLETE):
+            raise exception.UpdateReplace(self)
+
+        if self.needs_replace(after_props):
+            raise exception.UpdateReplace(self)
+
+        if before != after.freeze():
+            return True
+
+        try:
+            return before_props != after_props
+        except ValueError:
+            return True
 
     def needs_replace_with_prop_diff(self, changed_properties_set,
                                      after_props, before_props):
@@ -1309,7 +1439,11 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
         if self.FLAVOR in prop_diff:
             updaters.extend(self._update_flavor(after_props))
 
+        ud_update_policy = (prop_diff.get(self.USER_DATA_UPDATE_POLICY) or
+                            self.properties[self.USER_DATA_UPDATE_POLICY])
         if self.IMAGE in prop_diff:
+            updaters.append(self._update_image(after_props))
+        elif self.USER_DATA in prop_diff and ud_update_policy == 'REBUILD':
             updaters.append(self._update_image(after_props))
         elif self.ADMIN_PASS in prop_diff:
             if not server:
@@ -1558,6 +1692,10 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
                                     limits['maxPersonalitySize'], msg)
 
     def _delete(self):
+        # WRS: Issue STOP before issuing DELETE
+        if self.resource_id is not None:
+            self.client_plugin().stop_server(self.resource_id)
+
         if self.user_data_software_config():
             self._delete_queue()
             self._delete_user()
@@ -1613,6 +1751,7 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
         Note we do not wait for the SUSPENDED state, this is polled for by
         check_suspend_complete in a similar way to the create logic so we can
         take advantage of coroutines.
+        WRS changed SUSPENDED to PAUSED.
         """
         if self.resource_id is None:
             raise exception.Error(_('Cannot suspend %s, resource_id not set') %
@@ -1629,8 +1768,9 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
         else:
             # if the server has been suspended successful,
             # no need to suspend again
-            if self.client_plugin().get_status(server) != 'SUSPENDED':
-                LOG.debug('suspending server %s', self.resource_id)
+            # WRS converted SUSPENDED to PAUSED
+            if self.client_plugin().get_status(server) != 'PAUSED':
+                LOG.debug('suspending server %s' % self.resource_id)
                 server.suspend()
             return server.id
 
@@ -1642,8 +1782,9 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
         status = cp.get_status(server)
         LOG.debug('%(name)s check_suspend_complete status = %(status)s',
                   {'name': self.name, 'status': status})
+        # WRS converted SUSPENDED to PAUSED
         if status in list(cp.deferred_server_statuses + ['ACTIVE']):
-            return status == 'SUSPENDED'
+            return status == 'PAUSED'
         else:
             exc = exception.ResourceUnknownStatus(
                 result=_('Suspend of server %s failed') % server.name,
@@ -1718,7 +1859,9 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
         if self.resource_id is None:
             return
 
-        self.prepare_ports_for_replace()
+        # WRS allow replace if server deleted
+        with self.client_plugin().ignore_not_found:
+            self.prepare_ports_for_replace()
 
     def restore_prev_rsrc(self, convergence=False):
         self.restore_ports_after_rollback(convergence=convergence)

@@ -28,6 +28,8 @@ from heat.tests import common
 from heat.tests import utils
 from senlinclient.common import exc
 
+from testtools import testcase
+
 
 cluster_stack_template = """
 heat_template_version: 2016-04-08
@@ -84,6 +86,7 @@ class FakeCluster(object):
         }
 
 
+@testcase.skip("Senlin not supported in WRS")
 class SenlinClusterTest(common.HeatTestCase):
     def setUp(self):
         super(SenlinClusterTest, self).setUp()
@@ -358,6 +361,7 @@ class SenlinClusterTest(common.HeatTestCase):
         self.assertEqual(expected_reality, reality)
 
 
+@testcase.skip("Senlin not supported in WRS")
 class TestSenlinClusterValidation(common.HeatTestCase):
     def setUp(self):
         super(TestSenlinClusterValidation, self).setUp()

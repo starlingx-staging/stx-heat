@@ -73,7 +73,10 @@ class Net(neutron.NeutronResource):
             properties.Schema.STRING,
             _('The ID of the tenant which will own the network. Only '
               'administrative users can set the tenant identifier; this '
-              'cannot be changed using authorization policies.')
+              'cannot be changed using authorization policies.'),
+            constraints=[
+                constraints.CustomConstraint('keystone.project')
+            ],
         ),
         SHARED: properties.Schema(
             properties.Schema.BOOLEAN,
@@ -169,13 +172,21 @@ class Net(neutron.NeutronResource):
         ),
     }
 
+    # WRS: Translate TENANT_ID from a NAME to a UUID
     def translation_rules(self, properties):
         return [translation.TranslationRule(
             properties,
             translation.TranslationRule.RESOLVE,
             [self.QOS_POLICY],
             client_plugin=self.client_plugin(),
-            finder='get_qos_policy_id')]
+            finder='get_qos_policy_id'),
+            translation.TranslationRule(
+                properties,
+                translation.TranslationRule.RESOLVE,
+                [self.TENANT_ID],
+                client_plugin=self.client_plugin('keystone'),
+                finder='get_project_id'),
+        ]
 
     def handle_create(self):
         props = self.prepare_properties(

@@ -20,6 +20,8 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 stack_template = """
 heat_template_version: 2015-04-30
@@ -44,11 +46,13 @@ class DummyShareNetwork(object):
         self.network_type = '6'
 
 
+@testcase.skip("Manila not supported in WRS")
 class ShareNetworkWithNova(share_network.ManilaShareNetwork):
     def is_using_neutron(self):
         return False
 
 
+@testcase.skip("Manila not supported in WRS")
 class ManilaShareNetworkTest(common.HeatTestCase):
 
     def setUp(self):

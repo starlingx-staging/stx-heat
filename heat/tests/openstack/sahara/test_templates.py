@@ -26,6 +26,9 @@ from heat.engine import scheduler
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
+
 node_group_template = """
 heat_template_version: 2013-05-23
 description: Sahara Node Group Template
@@ -105,6 +108,7 @@ class FakeClusterTemplate(object):
         self.to_dict = lambda: {"cluster-template": "info"}
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaNodeGroupTemplateTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaNodeGroupTemplateTest, self).setUp()
@@ -316,6 +320,7 @@ class SaharaNodeGroupTemplateTest(common.HeatTestCase):
         self.assertEqual('2', reality.get('flavor'))
 
 
+@testcase.skip("Sahara not supported in WRS")
 class SaharaClusterTemplateTest(common.HeatTestCase):
     def setUp(self):
         super(SaharaClusterTemplateTest, self).setUp()

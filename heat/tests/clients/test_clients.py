@@ -19,17 +19,17 @@ from heatclient import client as heatclient
 from heatclient import exc as heat_exc
 from keystoneauth1 import exceptions as keystone_exc
 from keystoneauth1.identity import generic
-from manilaclient import exceptions as manila_exc
-from mistralclient.api import base as mistral_base
+# from manilaclient import exceptions as manila_exc
+# from mistralclient.api import base as mistral_base
 import mock
 from neutronclient.common import exceptions as neutron_exc
 from openstack import exceptions
 from oslo_config import cfg
-from saharaclient.api import base as sahara_base
+# from saharaclient.api import base as sahara_base
 import six
 from swiftclient import exceptions as swift_exc
 from testtools import testcase
-from troveclient import client as troveclient
+# from troveclient import client as troveclient
 from zaqarclient.transport import errors as zaqar_exc
 
 from heat.common import exception
@@ -709,75 +709,75 @@ class TestIsNotFound(common.HeatTestCase):
             exception=lambda: swift_exc.ClientException(
                 msg='conflict', http_status=409),
         )),
-        ('trove_not_found', dict(
-            is_not_found=True,
-            is_over_limit=False,
-            is_client_exception=True,
-            is_conflict=False,
-            plugin='trove',
-            exception=lambda: troveclient.exceptions.NotFound(message='gone'),
-        )),
-        ('trove_exception', dict(
-            is_not_found=False,
-            is_over_limit=False,
-            is_client_exception=False,
-            is_conflict=False,
-            plugin='trove',
-            exception=lambda: Exception()
-        )),
-        ('trove_overlimit', dict(
-            is_not_found=False,
-            is_over_limit=True,
-            is_client_exception=True,
-            is_conflict=False,
-            plugin='trove',
-            exception=lambda: troveclient.exceptions.RequestEntityTooLarge(
-                message='over'),
-        )),
-        ('trove_conflict', dict(
-            is_not_found=False,
-            is_over_limit=False,
-            is_client_exception=True,
-            is_conflict=True,
-            plugin='trove',
-            exception=lambda: troveclient.exceptions.Conflict(
-                message='Conflict'),
-        )),
-        ('sahara_not_found', dict(
-            is_not_found=True,
-            is_over_limit=False,
-            is_client_exception=True,
-            is_conflict=False,
-            plugin='sahara',
-            exception=lambda: sahara_base.APIException(
-                error_message='gone1', error_code=404),
-        )),
-        ('sahara_exception', dict(
-            is_not_found=False,
-            is_over_limit=False,
-            is_client_exception=False,
-            is_conflict=False,
-            plugin='sahara',
-            exception=lambda: Exception()
-        )),
-        ('sahara_overlimit', dict(
-            is_not_found=False,
-            is_over_limit=True,
-            is_client_exception=True,
-            is_conflict=False,
-            plugin='sahara',
-            exception=lambda: sahara_base.APIException(
-                error_message='over1', error_code=413),
-        )),
-        ('sahara_conflict', dict(
-            is_not_found=False,
-            is_over_limit=False,
-            is_client_exception=True,
-            is_conflict=True,
-            plugin='sahara',
-            exception=lambda: sahara_base.APIException(
-                error_message='conflict1', error_code=409),
-        )),
+        # ('trove_not_found', dict(
+        #    is_not_found=True,
+        #    is_over_limit=False,
+        #    is_client_exception=True,
+        #    is_conflict=False,
+        #    plugin='trove',
+        #    exception=lambda: troveclient.exceptions.NotFound(message='gone'),
+        # )),
+        # ('trove_exception', dict(
+        #     is_not_found=False,
+        #     is_over_limit=False,
+        #     is_client_exception=False,
+        #     is_conflict=False,
+        #     plugin='trove',
+        #     exception=lambda: Exception()
+        # )),
+        # ('trove_overlimit', dict(
+        #     is_not_found=False,
+        #     is_over_limit=True,
+        #     is_client_exception=True,
+        #     is_conflict=False,
+        #     plugin='trove',
+        #     exception=lambda: troveclient.exceptions.RequestEntityTooLarge(
+        #         message='over'),
+        # )),
+        # ('trove_conflict', dict(
+        #     is_not_found=False,
+        #     is_over_limit=False,
+        #     is_client_exception=True,
+        #     is_conflict=True,
+        #     plugin='trove',
+        #     exception=lambda: troveclient.exceptions.Conflict(
+        #         message='Conflict'),
+        # )),
+        # ('sahara_not_found', dict(
+        #     is_not_found=True,
+        #     is_over_limit=False,
+        #     is_client_exception=True,
+        #     is_conflict=False,
+        #     plugin='sahara',
+        #     exception=lambda: sahara_base.APIException(
+        #         error_message='gone1', error_code=404),
+        # )),
+        # ('sahara_exception', dict(
+        #     is_not_found=False,
+        #     is_over_limit=False,
+        #     is_client_exception=False,
+        #     is_conflict=False,
+        #     plugin='sahara',
+        #     exception=lambda: Exception()
+        # )),
+        # ('sahara_overlimit', dict(
+        #     is_not_found=False,
+        #     is_over_limit=True,
+        #     is_client_exception=True,
+        #     is_conflict=False,
+        #     plugin='sahara',
+        #     exception=lambda: sahara_base.APIException(
+        #         error_message='over1', error_code=413),
+        # )),
+        # ('sahara_conflict', dict(
+        #     is_not_found=False,
+        #     is_over_limit=False,
+        #     is_client_exception=True,
+        #     is_conflict=True,
+        #     plugin='sahara',
+        #     exception=lambda: sahara_base.APIException(
+        #         error_message='conflict1', error_code=409),
+        # )),
         ('zaqar_not_found', dict(
             is_not_found=True,
             is_over_limit=False,
@@ -786,54 +786,54 @@ class TestIsNotFound(common.HeatTestCase):
             plugin='zaqar',
             exception=lambda: zaqar_exc.ResourceNotFound(),
         )),
-        ('manila_not_found', dict(
-            is_not_found=True,
-            is_over_limit=False,
-            is_client_exception=True,
-            is_conflict=False,
-            plugin='manila',
-            exception=lambda: manila_exc.NotFound(),
-        )),
-        ('manila_exception', dict(
-            is_not_found=False,
-            is_over_limit=False,
-            is_client_exception=False,
-            is_conflict=False,
-            plugin='manila',
-            exception=lambda: Exception()
-        )),
-        ('manila_overlimit', dict(
-            is_not_found=False,
-            is_over_limit=True,
-            is_client_exception=True,
-            is_conflict=False,
-            plugin='manila',
-            exception=lambda: manila_exc.RequestEntityTooLarge(),
-        )),
-        ('manila_conflict', dict(
-            is_not_found=False,
-            is_over_limit=False,
-            is_client_exception=True,
-            is_conflict=True,
-            plugin='manila',
-            exception=lambda: manila_exc.Conflict(),
-        )),
-        ('mistral_not_found1', dict(
-            is_not_found=True,
-            is_over_limit=False,
-            is_client_exception=False,
-            is_conflict=False,
-            plugin='mistral',
-            exception=lambda: mistral_base.APIException(404),
-        )),
-        ('mistral_not_found2', dict(
-            is_not_found=True,
-            is_over_limit=False,
-            is_client_exception=False,
-            is_conflict=False,
-            plugin='mistral',
-            exception=lambda: keystone_exc.NotFound(),
-        )),
+        # ('manila_not_found', dict(
+        #     is_not_found=True,
+        #     is_over_limit=False,
+        #     is_client_exception=True,
+        #     is_conflict=False,
+        #     plugin='manila',
+        #     exception=lambda: manila_exc.NotFound(),
+        # )),
+        # ('manila_exception', dict(
+        #     is_not_found=False,
+        #     is_over_limit=False,
+        #     is_client_exception=False,
+        #     is_conflict=False,
+        #     plugin='manila',
+        #     exception=lambda: Exception()
+        # )),
+        # ('manila_overlimit', dict(
+        #     is_not_found=False,
+        #     is_over_limit=True,
+        #     is_client_exception=True,
+        #     is_conflict=False,
+        #     plugin='manila',
+        #     exception=lambda: manila_exc.RequestEntityTooLarge(),
+        # )),
+        # ('manila_conflict', dict(
+        #     is_not_found=False,
+        #     is_over_limit=False,
+        #     is_client_exception=True,
+        #     is_conflict=True,
+        #     plugin='manila',
+        #     exception=lambda: manila_exc.Conflict(),
+        # )),
+        # ('mistral_not_found1', dict(
+        #     is_not_found=True,
+        #     is_over_limit=False,
+        #     is_client_exception=False,
+        #     is_conflict=False,
+        #     plugin='mistral',
+        #     exception=lambda: mistral_base.APIException(404),
+        # )),
+        # ('mistral_not_found2', dict(
+        #     is_not_found=True,
+        #     is_over_limit=False,
+        #     is_client_exception=False,
+        #     is_conflict=False,
+        #     plugin='mistral',
+        #     exception=lambda: keystone_exc.NotFound(),
+        # )),
     ]
 
     def test_is_not_found(self):

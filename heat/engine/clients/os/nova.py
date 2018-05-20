@@ -15,6 +15,7 @@ import collections
 import email
 from email.mime import multipart
 from email.mime import text
+import eventlet
 import os
 import pkgutil
 import string
@@ -39,6 +40,10 @@ LOG = logging.getLogger(__name__)
 
 CLIENT_NAME = 'nova'
 
+# Vote rejection return code and reason strings
+VOTE_CODE = 409
+VOTE_REJECT_MESSAGE = "action-rejected"
+
 
 class NovaClientPlugin(client_plugin.ClientPlugin):
 
@@ -51,11 +56,13 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
                                 'REVERT_RESIZE',
                                 'SHUTOFF',
                                 'SUSPENDED',
+                                'PAUSED',
                                 'VERIFY_RESIZE']
 
     exceptions_module = exceptions
 
-    NOVA_API_VERSION = '2.1'
+    # WRS Changing this from 2.1 to 2.25
+    NOVA_API_VERSION = "2.25"
 
     validate_versions = [
         V2_2, V2_8, V2_10, V2_15, V2_26, V2_37, V2_42
@@ -429,6 +436,67 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 
         return mime_blob.as_string()
 
+    def send_vote(self, server):
+        """Return True if this server passes the vote to be stopped"""
+        if not server:
+            return False
+        if server.status == 'ERROR':
+            return True
+        vote = True
+        try:
+            LOG.info("WRS sent stop")
+            server.stop()
+        except exceptions.ClientException as exc:
+            msg = getattr(exc, 'message', None)
+            details = getattr(exc, 'details', None)
+            if ((getattr(exc, 'http_status', None) == VOTE_CODE) and
+                    (msg == VOTE_REJECT_MESSAGE)):
+                vote = False
+                LOG.info('WRS vote rejecting stop for %s , reason=%s' %
+                         (str(server), str(details)))
+            else:
+                LOG.info("WRS vote accepted with exception: %s" % str(exc))
+
+        return vote
+
+    def stop_server(self, server_id):
+        """Wait for server to STOP from Nova."""
+        try:
+            server = self.fetch_server(server_id)
+        except Exception as exc:
+            self.ignore_not_found(exc)
+            return True
+        if not server:
+            return False
+        status = self.get_status(server)
+        if status not in ("ERROR", ):
+            # if the server is not in error state, issue STOP
+            try:
+                LOG.info('stopping server %s' % server_id)
+                server.stop()
+                loop_count = 60
+                while loop_count > 0:
+                    loop_count -= 1
+                    try:
+                        self.refresh_server(server)
+                    except Exception as exc:
+                        self.ignore_not_found(exc)
+                        break
+                    else:
+                        short_server_status = server.status.split('(')[0]
+                        LOG.debug('looping server %s' % short_server_status)
+                        if short_server_status == "SHUTOFF":
+                            break
+                        # sleep for 1 second
+                        eventlet.sleep(1)
+            except Exception as ex:
+                # Log the error for the STOP but proceed with the delete
+                LOG.error('Could not safely stop %s before deleting. Exc: %s' %
+                          (server_id, str(ex)))
+                return False
+        LOG.info('done stopping server %s' % server_id)
+        return True
+
     def check_delete_server_complete(self, server_id):
         """Wait for server to disappear from Nova."""
         try:
@@ -445,7 +513,11 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
 
         status = self.get_status(server)
         if status in ("DELETED", "SOFT_DELETED"):
-            return True
+            # WRS  Fix timing bug related to servergroup deletion
+            # only return true when "Not Found" to allow plugins
+            # to complete their operations
+            LOG.info('Server %s deleted. DB cleanup pending.' % server.name)
+            return False
         if status == 'ERROR':
             fault = getattr(server, 'fault', {})
             message = fault.get('message', 'Unknown')
@@ -517,13 +589,15 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                 result=msg, resource_status=status)
 
     def rebuild(self, server_id, image_id, password=None,
-                preserve_ephemeral=False, meta=None, files=None):
+                preserve_ephemeral=False, meta=None, files=None,
+                userdata=None):
         """Rebuild the server and call check_rebuild to verify."""
         server = self.fetch_server(server_id)
         if server:
             server.rebuild(image_id, password=password,
                            preserve_ephemeral=preserve_ephemeral,
-                           meta=meta, files=files)
+                           meta=meta, files=files,
+                           userdata=userdata)
             return True
         else:
             return False
@@ -687,10 +761,11 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
                 return True
 
     def interface_attach(self, server_id, port_id=None, net_id=None, fip=None,
-                         security_groups=None):
+                         security_groups=None, vif_model=None):
         server = self.fetch_server(server_id)
         if server:
-            attachment = server.interface_attach(port_id, net_id, fip)
+            attachment = server.interface_attach(port_id, net_id, fip,
+                                                 vif_model)
             if not port_id and security_groups:
                 props = {'security_groups': security_groups}
                 self.clients.client('neutron').update_port(

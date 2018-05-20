@@ -18,6 +18,7 @@ from neutronclient.v2_0 import client as neutronclient
 
 from heat.common import exception
 from heat.common import template_format
+from heat.engine.clients.os import keystone
 from heat.engine.clients.os import neutron
 from heat.engine.resources.openstack.neutron import net
 from heat.engine import rsrc_defn
@@ -86,6 +87,11 @@ class NeutronNetTest(common.HeatTestCase):
         super(NeutronNetTest, self).setUp()
         self.patchobject(neutron.NeutronClientPlugin, 'has_extension',
                          return_value=True)
+
+        def keystone_side_effect(value):
+            return value
+        self.patchobject(keystone.KeystoneClientPlugin, 'get_project_id',
+                         side_effect=keystone_side_effect)
 
     def create_net(self, t, stack, resource_name):
         resource_defns = stack.t.resource_definitions(stack)

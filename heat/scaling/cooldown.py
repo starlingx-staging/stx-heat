@@ -16,10 +16,14 @@ from oslo_log import log as logging
 from heat.common import exception
 from heat.common.i18n import _
 from heat.engine import resource
+from oslo_config import cfg
 from oslo_utils import timeutils
 import six
 
 LOG = logging.getLogger(__name__)
+
+
+CONF = cfg.CONF
 
 
 class CooldownMixin(object):
@@ -31,12 +35,24 @@ class CooldownMixin(object):
     """
     def _check_scaling_allowed(self):
         metadata = self.metadata_get()
+        # WRS: If heat-engine is killed after setting scaling_in_progress
+        # and before clearing the flag, the cooldown is blocked forever.
+        # scaling_date provides a way of triggering a cleanup later
         if metadata.get('scaling_in_progress'):
-            LOG.info("Can not perform scaling action: resource %s "
-                     "is already in scaling.", self.name)
-            reason = _('due to scaling activity')
-            raise resource.NoActionRequired(res_name=self.name,
-                                            reason=reason)
+            sd = metadata.get('scaling_date', None)
+            if sd is None:
+                LOG.info("Can not perform scaling action: resource %s "
+                         "is already in scaling.", self.name)
+                reason = _('due to scaling activity')
+                raise resource.NoActionRequired(res_name=self.name,
+                                                reason=reason)
+            scale_max_time = CONF.cooldown.scaling_wait_time
+            if not timeutils.is_older_than(sd, scale_max_time):
+                LOG.info("Can not perform scaling action: resource %s "
+                         "is already in scaling.", self.name)
+                reason = _('due to scaling activity')
+                raise resource.NoActionRequired(res_name=self.name,
+                                                reason=reason)
         try:
             # Negative values don't make sense, so they are clamped to zero
             cooldown = max(0, self.properties[self.COOLDOWN])
@@ -61,6 +77,7 @@ class CooldownMixin(object):
         # Assumes _finished_scaling is called
         # after the scaling operation completes
         metadata['scaling_in_progress'] = True
+        metadata['scaling_date'] = timeutils.utcnow().isoformat()
         self.metadata_set(metadata)
 
     def _cooldown_check(self, cooldown, last_adjust):

@@ -224,11 +224,13 @@ class StackResource(resource.Resource):
 
         # Note we disable rollback for nested stacks, since they
         # should be rolled back by the parent stack on failure
+        # WRS.   nested_rollback is configurable
+        nested_rollback = cfg.CONF.disable_rollback_nested_stack_updates
         nested = parser.Stack(self.context,
                               stack_name,
                               parsed_template,
                               timeout_mins=timeout_mins,
-                              disable_rollback=True,
+                              disable_rollback=nested_rollback,
                               parent_resource=self.name,
                               owner_id=self.stack.id,
                               user_creds_id=self.stack.user_creds_id,
@@ -414,6 +416,9 @@ class StackResource(resource.Resource):
             if ret:
                 # Reset nested, to indicate we changed status
                 self._nested = None
+                # (handle new outputs added by update)
+                # Clear outputs to trigger re-querying them
+                self._outputs = None
             return ret
         elif status == self.FAILED:
             raise exception.ResourceFailure(status_reason, self,
@@ -539,18 +544,40 @@ class StackResource(resource.Resource):
         if stack_identity is None:
             return
 
+        cookie = None
+        try:
+            status_data = stack_object.Stack.get_status(self.context,
+                                                        self.resource_id)
+            action, status, status_reason, updated_time = status_data
+            # If the object is DELETE COMPLETE, do not create a cookie
+            if action == self.DELETE and status == self.COMPLETE:
+                LOG.info("Previously deleted %s" % six.text_type(self))
+            else:
+                # Any other state we need a cookie
+                cookie = {'previous': {
+                    'updated_at': updated_time,
+                    'state': (action, status)}}
+        except exception.NotFound:
+            LOG.warning("No status data found for nested stack")
+
         with self.rpc_client().ignore_error_by_name('EntityNotFound'):
             if self.abandon_in_progress:
                 self.rpc_client().abandon_stack(self.context, stack_identity)
             else:
                 self.rpc_client().delete_stack(self.context, stack_identity,
                                                cast=False)
+        return cookie
 
     def handle_delete(self):
         return self.delete_nested()
 
     def check_delete_complete(self, cookie=None):
-        return self._check_status_complete(self.DELETE)
+        if cookie is not None and 'target_action' in cookie:
+            target_action = cookie['target_action']
+            cookie = None
+        else:
+            target_action = self.DELETE
+        return self._check_status_complete(target_action, cookie=cookie)
 
     def handle_suspend(self):
         stack_identity = self.nested_identifier()

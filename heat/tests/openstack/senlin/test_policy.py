@@ -27,6 +27,8 @@ from heat.engine import template
 from heat.tests import common
 from heat.tests import utils
 
+from testtools import testcase
+
 
 policy_stack_template = """
 heat_template_version: 2016-04-08
@@ -64,6 +66,7 @@ class FakePolicy(object):
         }
 
 
+@testcase.skip("Senlin not supported in WRS")
 class SenlinPolicyTest(common.HeatTestCase):
     def setUp(self):
         super(SenlinPolicyTest, self).setUp()
