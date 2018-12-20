@@ -1,0 +1,221 @@
+From 958610b65a74f333125313a48b535009ddc9d832 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:05:17 -0500
+Subject: [PATCH 06/57] Glance local file location support and cache_raw
+
+These HEAT enhancements only affect Glance V1.0 based on WRS changes in glanceclient
+Heat OS::Glance::Image fixes for cache_raw
+Fixes for how glanceclient implements cache_raw in Mitaka plus updates to unit tests
+---
+ heat/engine/resources/openstack/glance/image.py | 38 ++++++++++--
+ heat/tests/openstack/glance/test_image.py       |  4 +-
+ heat/tests/wr/test_glance_image_enhancements.py | 81 +++++++++++++++++++++++++
+ 3 files changed, 118 insertions(+), 5 deletions(-)
+ create mode 100644 heat/tests/wr/test_glance_image_enhancements.py
+
+diff --git a/heat/engine/resources/openstack/glance/image.py b/heat/engine/resources/openstack/glance/image.py
+index 95a9ea1..e0b1576 100644
+--- a/heat/engine/resources/openstack/glance/image.py
++++ b/heat/engine/resources/openstack/glance/image.py
+@@ -18,6 +18,12 @@ from heat.engine import properties
+ from heat.engine import resource
+ from heat.engine import support
+ 
++from oslo_log import log as logging
++
++LOG = logging.getLogger(__name__)
++
++(LOCAL_FILE_PREFIX) = ('file://')
++
+ 
+ class GlanceImage(resource.Resource):
+     """A resource managing images in Glance.
+@@ -37,12 +43,12 @@ class GlanceImage(resource.Resource):
+     PROPERTIES = (
+         NAME, IMAGE_ID, IS_PUBLIC, MIN_DISK, MIN_RAM, PROTECTED,
+         DISK_FORMAT, CONTAINER_FORMAT, LOCATION, TAGS, EXTRA_PROPERTIES,
+-        ARCHITECTURE, KERNEL_ID, OS_DISTRO, OWNER, RAMDISK_ID
++        ARCHITECTURE, KERNEL_ID, OS_DISTRO, OWNER, RAMDISK_ID, CACHE_RAW
+     ) = (
+         'name', 'id', 'is_public', 'min_disk', 'min_ram', 'protected',
+         'disk_format', 'container_format', 'location', 'tags',
+         'extra_properties', 'architecture', 'kernel_id', 'os_distro',
+-        'owner', 'ramdisk_id'
++        'owner', 'ramdisk_id', 'cache_raw'
+     )
+ 
+     glance_id_pattern = ('^([0-9a-fA-F]){8}-([0-9a-fA-F]){4}-([0-9a-fA-F]){4}'
+@@ -114,7 +120,9 @@ class GlanceImage(resource.Resource):
+             properties.Schema.STRING,
+             _('URL where the data for this image already resides. For '
+               'example, if the image data is stored in swift, you could '
+-              'specify "swift://example.com/container/obj".'),
++              'specify "swift://example.com/container/obj". '
++              'WRS:extension - add support for local file. For example, '
++              'to load /root/guest.img specify "file:///root/guest.img".'),
+             required=True,
+         ),
+         TAGS: properties.Schema(
+@@ -168,13 +176,23 @@ class GlanceImage(resource.Resource):
+             constraints=[
+                 constraints.AllowedPattern(glance_id_pattern)
+             ]
+-        )
++        ),
++        CACHE_RAW: properties.Schema(
++            properties.Schema.BOOLEAN,
++            _('Whether to cache this image on import. '
++              'Default value is False.'),
++            default=False,
++        ),
+     }
+ 
+     default_client_name = 'glance'
+ 
+     entity = 'images'
+ 
++    # WRS:extension  Return contents of the local file
++    def _load_local_file(self, file_location):
++        return open(file_location, 'rb')
++
+     def handle_create(self):
+         args = dict((k, v) for k, v in self.properties.items()
+                     if v is not None)
+@@ -185,6 +203,18 @@ class GlanceImage(resource.Resource):
+         kernel_id = args.pop(self.KERNEL_ID, None)
+         os_distro = args.pop(self.OS_DISTRO, None)
+         ramdisk_id = args.pop(self.RAMDISK_ID, None)
++        # WRS:extension - add support for local file
++        if args[self.LOCATION].startswith(LOCAL_FILE_PREFIX):
++            args['data'] = self._load_local_file(
++                args[self.LOCATION][len(LOCAL_FILE_PREFIX):])
++            args.pop(self.LOCATION)
++
++        # cache_raw must be passed in a sub-property
++        cache_raw = args.pop(self.CACHE_RAW, False)
++        if cache_raw:
++            args['properties'][self.CACHE_RAW] = cache_raw
++        else:
++            args['properties'][self.CACHE_RAW] = cache_raw
+ 
+         image_id = self.client(version=self.client_plugin().V1).images.create(
+             **args).id
+diff --git a/heat/tests/openstack/glance/test_image.py b/heat/tests/openstack/glance/test_image.py
+index 28a88cc..9fb3dd2 100644
+--- a/heat/tests/openstack/glance/test_image.py
++++ b/heat/tests/openstack/glance/test_image.py
+@@ -241,7 +241,7 @@ class GlanceImageTest(common.HeatTestCase):
+             name=u'cirros_image',
+             protected=False,
+             owner=u'test_owner',
+-            properties={}
++            properties={'cache_raw': False}
+         )
+         self.image_tags.update.assert_called_once_with(
+             self.my_image.resource_id,
+@@ -371,6 +371,7 @@ class GlanceImageTest(common.HeatTestCase):
+         images = mock.MagicMock()
+         show_value = {
+             'name': 'test',
++            'cache_raw': True,
+             'disk_format': 'qcow2',
+             'container_format': 'bare',
+             'protected': False,
+@@ -400,6 +401,7 @@ class GlanceImageTest(common.HeatTestCase):
+         reality = self.my_image.get_live_state(self.my_image.properties)
+         expected = {
+             'name': 'test',
++            'cache_raw': True,
+             'disk_format': 'qcow2',
+             'container_format': 'bare',
+             'protected': False,
+diff --git a/heat/tests/wr/test_glance_image_enhancements.py b/heat/tests/wr/test_glance_image_enhancements.py
+new file mode 100644
+index 0000000..c64be2f
+--- /dev/null
++++ b/heat/tests/wr/test_glance_image_enhancements.py
+@@ -0,0 +1,81 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import mock
++import six
++
++from heat.common import template_format
++from heat.engine.resources.openstack.glance import image as gi
++from heat.engine import stack
++from heat.engine import template
++from heat.tests import common
++from heat.tests import utils
++
++
++# WRS  Glance Image enhancements
++# Location support for local files
++# new  cache_raw property
++
++image_file_template = '''
++heat_template_version: 2013-05-23
++description: This template to define a glance image.
++resources:
++  my_image:
++    type: OS::Glance::Image
++    properties:
++      name: cirros_image
++      id: 41f0e60c-ebb4-4375-a2b4-845ae8b9c995
++      disk_format: qcow2
++      container_format: bare
++      is_public: True
++      min_disk: 10
++      min_ram: 512
++      protected: False
++      location: file:///some_folder/some_file.img
++      cache_raw: False
++'''
++
++
++class GlanceFileImageTest(common.HeatTestCase):
++    def setUp(self):
++        super(GlanceFileImageTest, self).setUp()
++
++        utils.setup_dummy_db()
++        self.ctx = utils.dummy_context()
++
++        tpl = template_format.parse(image_file_template)
++        self.stack = stack.Stack(
++            self.ctx, 'glance_image_test_stack_wr',
++            template.Template(tpl)
++        )
++
++        self.my_image = self.stack['my_image']
++        glance = mock.MagicMock()
++        self.glanceclient = mock.MagicMock()
++        self.my_image.client = glance
++        glance.return_value = self.glanceclient
++        self.images = self.glanceclient.images
++
++    @mock.patch.object(gi.GlanceImage, '_load_local_file')
++    def test_image_handle_create(self, mock_load):
++        mock_load.return_value = None
++        value = mock.MagicMock()
++        image_id = '41f0e60c-ebb4-4375-a2b4-845ae8b9c995'
++        value.id = image_id
++        self.images.create.return_value = value
++        self.my_image.handle_create()
++        self.assertEqual(image_id, self.my_image.resource_id)
++
++    def test_invalid_image_handle_create(self):
++        exc = self.assertRaises(IOError, self.my_image.handle_create)
++        self.assertIn("No such file", six.text_type(exc))
+-- 
+2.7.4
+

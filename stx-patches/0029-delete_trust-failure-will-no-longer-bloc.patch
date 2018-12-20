@@ -1,0 +1,65 @@
+From 1460cbb4ab00be65b13267b4dca429ca5ddebb0f Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Wed, 25 Oct 2017 10:59:19 -0500
+Subject: [PATCH 29/57] delete_trust failure will no longer block a stack delete
+
+Scenario:  accidentally delete a tenant that has active stacks
+           you would have to issue a stack delete twice per stack to delete those stacks
+           that was because the delete_trust would fail, but credentials were still cleared
+           this change just logs the error but does not fail the stack delete.
+---
+ heat/engine/stack.py            | 12 ++++++++----
+ heat/tests/test_stack_delete.py |  6 +++---
+ 2 files changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/heat/engine/stack.py b/heat/engine/stack.py
+index b892d20..4086a2e 100644
+--- a/heat/engine/stack.py
++++ b/heat/engine/stack.py
+@@ -1744,10 +1744,14 @@ class Stack(collections.Mapping):
+                             self.clients.client('keystone').delete_trust(
+                                 trust_id)
+                     except Exception as ex:
+-                        LOG.exception("Error deleting trust")
+-                        stack_status = self.FAILED
+-                        reason = ("Error deleting trust: %s" %
+-                                  six.text_type(ex))
++                        # handle when a tenant is deleted
++                        # We want the admin to be able to delete the stack
++                        # Do not FAIL a delete when we cannot delete a trust.
++                        # We already carry through and delete the credentials
++                        # Without this change, they would need to issue
++                        # an additional stack-delete
++                        LOG.error("Error deleting trust: %s, reason: %s" %
++                                  (trust_id, six.text_type(ex)))
+ 
+             # Delete the stored credentials
+             try:
+diff --git a/heat/tests/test_stack_delete.py b/heat/tests/test_stack_delete.py
+index bb9b352..13887e2 100644
+--- a/heat/tests/test_stack_delete.py
++++ b/heat/tests/test_stack_delete.py
+@@ -334,6 +334,7 @@ class StackTest(common.HeatTestCase):
+         self.assertEqual((stack.Stack.DELETE, stack.Stack.COMPLETE),
+                          self.stack.state)
+ 
++    # We will no longer fail to delete a stack if trust delete fails
+     def test_delete_trust_fail(self):
+         class FakeKeystoneClientFail(fakes.FakeKeystoneClient):
+             def delete_trust(self, trust_id):
+@@ -354,10 +355,9 @@ class StackTest(common.HeatTestCase):
+         self.assertEqual(2, mock_kcp.call_count)
+ 
+         db_s = stack_object.Stack.get_by_id(self.ctx, stack_id)
+-        self.assertIsNotNone(db_s)
+-        self.assertEqual((stack.Stack.DELETE, stack.Stack.FAILED),
++        self.assertIsNone(db_s)
++        self.assertEqual((stack.Stack.DELETE, stack.Stack.COMPLETE),
+                          self.stack.state)
+-        self.assertIn('Error deleting trust', self.stack.status_reason)
+ 
+     def test_delete_deletes_project(self):
+         fkc = fakes.FakeKeystoneClient()
+-- 
+2.7.4
+

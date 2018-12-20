@@ -1,0 +1,220 @@
+From 6fb7fd1ec5299808fd190960cb84a334f835c98f Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Wed, 25 Oct 2017 11:48:48 -0500
+Subject: [PATCH 31/57] Fix timing issue with stack delete of
+ nested stack in delete failed state
+
+Fix timing issue with stack delete of nested stack in delete failed state
+
+The problem observed in the logs were that if a nested stack was in DELETE FAILED state, the rpc call to delete that stack again would immediately return.
+This is tracked by upstream bug   https://bugs.launchpad.net/heat/+bug/1669608
+
+Fixes include:
+ - Adding additional logging during state transitions of stacks and resources
+ - Using the updated_at field to represent the last time a stack was updated, and not when it was stack-updated.
+ - Adding quicker stale lock detection.  If a stale lock was found for a nested stack, we would quietly wait 4 minutes before stealing that lock.  Now it steals it faster.
+
+Note:  there are still other ways to get the appearance of a hung stack-delete
+1) If nova is in a bad "deleting" state, there is no way to delete it from heat, since nova will also not delete it.
+2) If a nova VM has kernel-panic or is in ERROR state, and a cinder volume detachment is attempted, that action will fail and the delete will abort.
+---
+ heat/engine/resource.py                 |  2 ++
+ heat/engine/resources/stack_resource.py | 24 +++++++++++++++++++++++-
+ heat/engine/service.py                  | 16 ++++++++++++++--
+ heat/engine/stack.py                    |  7 +++++++
+ heat/tests/db/test_sqlalchemy_api.py    |  5 ++++-
+ heat/tests/test_stack.py                |  3 ++-
+ 6 files changed, 52 insertions(+), 5 deletions(-)
+
+diff --git a/heat/engine/resource.py b/heat/engine/resource.py
+index 9e12242..f5d56a1 100644
+--- a/heat/engine/resource.py
++++ b/heat/engine/resource.py
+@@ -1864,6 +1864,7 @@ class Resource(status.ResourceStatus):
+         action = self.DELETE
+ 
+         if (self.action, self.status) == (self.DELETE, self.COMPLETE):
++            LOG.info('delete complete for %s', six.text_type(self))
+             return
+         # No need to delete if the resource has never been created
+         if self.action == self.INIT:
+@@ -2180,6 +2181,7 @@ class Resource(status.ResourceStatus):
+ 
+     def state_set(self, action, status, reason="state changed",
+                   lock=LOCK_NONE):
++        LOG.info("%s -> %s %s" % (six.text_type(self), action, status))
+         if action not in self.ACTIONS:
+             raise ValueError(_("Invalid action %s") % action)
+ 
+diff --git a/heat/engine/resources/stack_resource.py b/heat/engine/resources/stack_resource.py
+index d16a48d..3164c59 100644
+--- a/heat/engine/resources/stack_resource.py
++++ b/heat/engine/resources/stack_resource.py
+@@ -541,18 +541,40 @@ class StackResource(resource.Resource):
+         if stack_identity is None:
+             return
+ 
++        cookie = None
++        try:
++            status_data = stack_object.Stack.get_status(self.context,
++                                                        self.resource_id)
++            action, status, status_reason, updated_time = status_data
++            # If the object is DELETE COMPLETE, do not create a cookie
++            if action == self.DELETE and status == self.COMPLETE:
++                LOG.info("Previously deleted %s" % six.text_type(self))
++            else:
++                # Any other state we need a cookie
++                cookie = {'previous': {
++                    'updated_at': updated_time,
++                    'state': (action, status)}}
++        except exception.NotFound:
++            LOG.warning("No status data found for nested stack")
++
+         with self.rpc_client().ignore_error_by_name('EntityNotFound'):
+             if self.abandon_in_progress:
+                 self.rpc_client().abandon_stack(self.context, stack_identity)
+             else:
+                 self.rpc_client().delete_stack(self.context, stack_identity,
+                                                cast=False)
++        return cookie
+ 
+     def handle_delete(self):
+         return self.delete_nested()
+ 
+     def check_delete_complete(self, cookie=None):
+-        return self._check_status_complete(self.DELETE)
++        if cookie is not None and 'target_action' in cookie:
++            target_action = cookie['target_action']
++            cookie = None
++        else:
++            target_action = self.DELETE
++        return self._check_status_complete(target_action, cookie=cookie)
+ 
+     def handle_suspend(self):
+         stack_identity = self.nested_identifier()
+diff --git a/heat/engine/service.py b/heat/engine/service.py
+index 27f3f0f..b54a0c1 100644
+--- a/heat/engine/service.py
++++ b/heat/engine/service.py
+@@ -1413,11 +1413,11 @@ class EngineService(service.ServiceBase):
+         """
+ 
+         st = self._get_stack(cnxt, stack_identity)
++        LOG.info('Deleting stack %s', st.name)
+         if (st.status == parser.Stack.COMPLETE and
+                 st.action == parser.Stack.DELETE):
+             raise exception.EntityNotFound(entity='Stack', name=st.name)
+ 
+-        LOG.info('Deleting stack %s', st.name)
+         stack = parser.Stack.load(cnxt, stack=st)
+         self.resource_enforcer.enforce_stack(stack)
+ 
+@@ -1474,7 +1474,11 @@ class EngineService(service.ServiceBase):
+             watch = timeutils.StopWatch(cfg.CONF.error_wait_time + 10)
+             watch.start()
+ 
+-            while not watch.expired():
++            LOG.info("Delaying up to %d seconds for cancel to complete" %
++                     (cfg.CONF.error_wait_time + 10))
++            lock_is_valid = True
++
++            while not watch.expired() and lock_is_valid:
+                 LOG.debug('Waiting for stack cancel to complete: %s',
+                           stack.name)
+                 with lock.try_thread_lock() as acquire_result:
+@@ -1485,8 +1489,14 @@ class EngineService(service.ServiceBase):
+                         self.thread_group_mgr.start_with_acquired_lock(
+                             stack, lock, stack.delete)
+                         return
++                    elif not service_utils.engine_alive(cnxt, acquire_result):
++                        # The lock is stale.  break out early
++                        LOG.info("Potential stale lock detected")
++                        lock_is_valid = False
+                 eventlet.sleep(1.0)
+ 
++            LOG.info("Delay expired for cancel")
++
+             if acquire_result == self.engine_id:
+                 # cancel didn't finish in time, attempt a stop instead
+                 self.thread_group_mgr.stop(stack.id)
+@@ -1502,6 +1512,8 @@ class EngineService(service.ServiceBase):
+                 else:
+                     raise exception.StopActionFailed(
+                         stack_name=stack.name, engine_id=acquire_result)
++            else:
++                LOG.info("Inactive lock detected for %s" % acquire_result)
+ 
+             stack = reload()
+             # do the actual delete in a locked task
+diff --git a/heat/engine/stack.py b/heat/engine/stack.py
+index 4086a2e..12066e0 100644
+--- a/heat/engine/stack.py
++++ b/heat/engine/stack.py
+@@ -950,6 +950,9 @@ class Stack(collections.Mapping):
+         self.status = status
+         self.status_reason = reason
+         self._log_status()
++        # update the updated_time field whenever any state change occurs
++        # This partially reverts #1193269 related to #1193132
++        self.updated_time = oslo_timeutils.utcnow()
+ 
+         # WRS.  Add an extra exception log when we encounter FAILED
+         if self.status == self.FAILED:
+@@ -985,15 +988,19 @@ class Stack(collections.Mapping):
+                   'name': self.name,
+                   'reason': self.status_reason})
+ 
++    # persist update timestamp along with state changes.
++    # contrary to #1193269 and #1193132
+     def _persist_state(self):
+         """Persist stack state to database"""
+         if self.id is None:
+             return
++        LOG.info("%s->%s %s" % (six.text_type(self), self.action, self.status))
+         stack = stack_object.Stack.get_by_id(self.context, self.id,
+                                              eager_load=False)
+         if stack is not None:
+             values = {'action': self.action,
+                       'status': self.status,
++                      'updated_at': self.updated_time,
+                       'status_reason': six.text_type(self.status_reason)}
+             self._send_notification_and_add_event()
+             if self.convergence:
+diff --git a/heat/tests/db/test_sqlalchemy_api.py b/heat/tests/db/test_sqlalchemy_api.py
+index b480e5d..4f2a860 100644
+--- a/heat/tests/db/test_sqlalchemy_api.py
++++ b/heat/tests/db/test_sqlalchemy_api.py
+@@ -414,12 +414,15 @@ class SqlAlchemyTest(common.HeatTestCase):
+ 
+         st = db_api.stack_get_status(self.ctx, UUID1)
+         self.assertEqual(('CREATE', 'IN_PROGRESS', '', None), st)
++        # updated_at was None.  After delete it should be set
+ 
+         stack.delete()
+         st = db_api.stack_get_status(self.ctx, UUID1)
++        # Delete will alter updated_at.
++        updated_at = st[3]
+         self.assertEqual(
+             ('DELETE', 'COMPLETE',
+-             'Stack DELETE completed successfully', None),
++             'Stack DELETE completed successfully', updated_at),
+             st)
+ 
+         self.assertRaises(exception.NotFound,
+diff --git a/heat/tests/test_stack.py b/heat/tests/test_stack.py
+index cac03a7..14963ff 100644
+--- a/heat/tests/test_stack.py
++++ b/heat/tests/test_stack.py
+@@ -741,7 +741,8 @@ class StackTest(common.HeatTestCase):
+         self.stack.create()
+         self.assertEqual((self.stack.CREATE, self.stack.COMPLETE),
+                          self.stack.state)
+-        self.assertIsNone(self.stack.updated_time)
++        # updated_time will now be set as part of every state change
++        # self.assertIsNone(self.stack.updated_time)
+ 
+         self.stack.suspend()
+ 
+-- 
+2.7.4
+

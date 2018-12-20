@@ -1,0 +1,61 @@
+From 2ea55977cd8832e9df6be0c03832a04323a68b10 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Wed, 25 Oct 2017 12:01:49 -0500
+Subject: [PATCH 33/57] UPSTREAM_BUG. Unlimited cinder quotas throws exception
+
+When cinder-quota-resource blueprint was implemented for newton, it was supposed to support a value of -1 to indicate an unlimited quota for a particular key (volumes, gigabytes or snapshots).
+However the implementation had a iterator error (you cannot modify a dictionary as you are iterating over it) and no unit tests to expose that bug.
+
+This commit fixes both upstream issues
+Inspected by Angie
+---
+ heat/engine/resources/openstack/cinder/quota.py |  4 ++--
+ heat/tests/openstack/cinder/test_quota.py       | 20 ++++++++++++++++++++
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/heat/engine/resources/openstack/cinder/quota.py b/heat/engine/resources/openstack/cinder/quota.py
+index 7fc27c2..270ebe7 100644
+--- a/heat/engine/resources/openstack/cinder/quota.py
++++ b/heat/engine/resources/openstack/cinder/quota.py
+@@ -115,8 +115,8 @@ class CinderQuota(resource.Resource):
+         search_opts = {'all_tenants': True, 'project_id': project}
+         volume_list = None
+         snapshot_list = None
+-        for key in kwargs:
+-            if kwargs[key] == -1:
++        for key, value in kwargs.items():
++            if value == -1:
+                 del kwargs[key]
+ 
+         if self.GIGABYTES in kwargs:
+diff --git a/heat/tests/openstack/cinder/test_quota.py b/heat/tests/openstack/cinder/test_quota.py
+index 9985536..62b3f9c 100644
+--- a/heat/tests/openstack/cinder/test_quota.py
++++ b/heat/tests/openstack/cinder/test_quota.py
+@@ -180,3 +180,23 @@ class CinderQuotaTest(common.HeatTestCase):
+         self.assertEqual(
+             self.err_msg % {'property': 'snapshots', 'value': 2, 'total': 4},
+             six.text_type(err))
++
++    def _test_quota_with_unlimited_value(self, prop_name):
++        my_quota = self.stack['my_quota']
++        props = self.stack.t.t['resources']['my_quota']['properties'].copy()
++        props[prop_name] = -1
++        my_quota.t = my_quota.t.freeze(properties=props)
++        my_quota.reparse()
++        my_quota.handle_create()
++        kwargs = {'gigabytes': 5, 'snapshots': 2, 'volumes': 3}
++        kwargs[prop_name] = -1
++        self.quotas.update.assert_called_once_with('some_project_id', **kwargs)
++
++    def test_quota_with_unlimited_gigabytes(self):
++        self._test_quota_with_unlimited_value('gigabytes')
++
++    def test_quota_with_unlimited_snapshots(self):
++        self._test_quota_with_unlimited_value('snapshots')
++
++    def test_quota_with_unlimited_volumes(self):
++        self._test_quota_with_unlimited_value('volumes')
+-- 
+2.7.4
+

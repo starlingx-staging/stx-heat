@@ -1,0 +1,27 @@
+From f1c28de831da11beed53011e7fb93f04becff095 Mon Sep 17 00:00:00 2001
+From: rabi <ramishra@redhat.com>
+Date: Tue, 31 Oct 2017 15:55:06 +0530
+Subject: [PATCH 41/57] set CEILOMETER_BACKEND=mysql for pike/ocata
+
+Change-Id: I42490c82a37a179414b5d34f547df4d145ee8aa7
+Depends-On: I79beb5c3e9e7c35c91cdd0d5a1d91532bebc4b6d
+Closes-Bug: #1728883
+---
+ heat_integrationtests/pre_test_hook.sh | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/heat_integrationtests/pre_test_hook.sh b/heat_integrationtests/pre_test_hook.sh
+index cabbbcb..c15d78e 100755
+--- a/heat_integrationtests/pre_test_hook.sh
++++ b/heat_integrationtests/pre_test_hook.sh
+@@ -47,6 +47,7 @@ echo "[[local|localrc]]" >> $localconf
+ # Create the images required for testing
+ echo "IMAGE_URLS+=http://fedora.bhs.mirrors.ovh.net/linux/releases/24/CloudImages/x86_64/images/Fedora-Cloud-Base-24-1.2.x86_64.qcow2" >> $localconf
+ 
++echo "CEILOMETER_BACKEND=mysql" >> $localconf
+ echo "CEILOMETER_PIPELINE_INTERVAL=60" >> $localconf
+ echo "HEAT_ENABLE_ADOPT_ABANDON=True" >> $localconf
+ # Use the lbaas v2 namespace driver for devstack integration testing since
+-- 
+2.7.4
+

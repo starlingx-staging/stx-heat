@@ -1,0 +1,31 @@
+From d440335219ca1027dc1c80f8e1dc8173d3f084cc Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Mon, 18 Dec 2017 13:11:53 -0600
+Subject: [PATCH 38/57] Upstream bug.  external_fixed_ips breaks
+ router creation when resolving subnets
+
+The upstream code iterates over a dictionary while modifying it using the "pop" command.
+This is incorrect and causes a Runtime error.
+The fix is to make a copy, iterate over that  while manipulating the original dictionary.
+Python 2.7 can do this using iter(), however python 3 would not have worked.
+The fix does a copy first which makes the code operate the same in both interpreters, since there is no "six" routine for this.
+---
+ heat/engine/resources/openstack/neutron/router.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/heat/engine/resources/openstack/neutron/router.py b/heat/engine/resources/openstack/neutron/router.py
+index 4b5e099..4cc17dd 100644
+--- a/heat/engine/resources/openstack/neutron/router.py
++++ b/heat/engine/resources/openstack/neutron/router.py
+@@ -335,7 +335,7 @@ class Router(neutron.NeutronResource):
+     def _resolve_subnet(self, gateway):
+         external_gw_fixed_ips = gateway[self.EXTERNAL_GATEWAY_FIXED_IPS]
+         for fixed_ip in external_gw_fixed_ips:
+-            for key, value in six.iteritems(fixed_ip):
++            for key, value in fixed_ip.copy().items():
+                 if value is None:
+                     fixed_ip.pop(key)
+             if self.SUBNET in fixed_ip:
+-- 
+2.7.4
+

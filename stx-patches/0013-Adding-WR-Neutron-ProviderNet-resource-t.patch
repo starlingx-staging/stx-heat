@@ -1,0 +1,902 @@
+From f3638ee88853956b2830016a01698d0131fd25a7 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:51:03 -0500
+Subject: [PATCH 13/57] Adding WR::Neutron::ProviderNet resource types
+
+New resources:
+    WR::Neutron::ProviderNet
+    WR::Neutron::ProviderNetRange
+
+Provides updated Tox tests.
+Additional attributes are now exposed through HEAT
+
+Enhancements to providernet and providernet-range to support tenant
+and other fields.
+This brings the HEAT resources in line with neutron CLI commands
+---
+ heat/engine/resources/wr/neutron_provider_net.py   | 157 +++++++++++++
+ .../resources/wr/neutron_provider_net_range.py     | 199 ++++++++++++++++
+ heat/tests/wr/test_neutron_provider_net.py         | 261 +++++++++++++++++++++
+ heat/tests/wr/test_neutron_provider_net_range.py   | 232 ++++++++++++++++++
+ 4 files changed, 849 insertions(+)
+ create mode 100644 heat/engine/resources/wr/neutron_provider_net.py
+ create mode 100644 heat/engine/resources/wr/neutron_provider_net_range.py
+ create mode 100644 heat/tests/wr/test_neutron_provider_net.py
+ create mode 100644 heat/tests/wr/test_neutron_provider_net_range.py
+
+diff --git a/heat/engine/resources/wr/neutron_provider_net.py b/heat/engine/resources/wr/neutron_provider_net.py
+new file mode 100644
+index 0000000..c8e3433
+--- /dev/null
++++ b/heat/engine/resources/wr/neutron_provider_net.py
+@@ -0,0 +1,157 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++#
++# Copyright (c) 2013-2014 Wind River Systems, Inc.
++#
++#
++#
++#
++#
++
++
++from heat.common.i18n import _
++from heat.engine import attributes
++from heat.engine import constraints
++from heat.engine import properties
++from heat.engine.resources.openstack.neutron import neutron
++
++from oslo_log import log as logging
++
++import neutronclient.common.exceptions as neutron_exp
++
++LOG = logging.getLogger(__name__)
++
++
++class ProviderNet(neutron.NeutronResource):
++    """A resource for WR Neutron Provider Network.
++
++    The WR Neutron Provider Network is not the same as the
++    regular Neutron Provider Network.
++    """
++    neutron_api_key = 'providernet'
++
++    PROPERTIES = (
++        NAME, TYPE, MTU, DESCRIPTION, VLAN_TRANSPARENT,
++    ) = (
++        'name', 'type', 'mtu', 'description', 'vlan_transparent',
++    )
++
++    ATTRIBUTES = (
++        NAME, TYPE, MTU, STATUS, DESCRIPTION, VLAN_TRANSPARENT
++    ) = (
++        'name', 'type', 'mtu', 'status', 'description', 'vlan_transparent'
++    )
++
++    properties_schema = {
++        DESCRIPTION: properties.Schema(
++            properties.Schema.STRING,
++            _('Description for the provider network.'),
++            update_allowed=True,
++        ),
++        TYPE: properties.Schema(
++            properties.Schema.STRING,
++            _('The network type for the provider network.'),
++            default='flat',
++            constraints=[
++                constraints.AllowedValues(['flat', 'vlan', 'vxlan']),
++            ]
++        ),
++        MTU: properties.Schema(
++            properties.Schema.NUMBER,
++            _('Maximum transmit unit on the provider network. '
++              'Note: default is 1500.'),
++            update_allowed=True,
++        ),
++        VLAN_TRANSPARENT: properties.Schema(
++            properties.Schema.BOOLEAN,
++            _('Allow VLAN tagged packets on tenant networks.'),
++            default=False,
++        ),
++        NAME: properties.Schema(
++            properties.Schema.STRING,
++            _('Name of the provider network.'),
++            required=True,
++        ),
++    }
++
++    attributes_schema = {
++        NAME: attributes.Schema(
++            _("The name of the provider network."),
++            type=attributes.Schema.STRING
++        ),
++        TYPE: attributes.Schema(
++            _("The type of the provider network."),
++            type=attributes.Schema.STRING
++        ),
++        MTU: attributes.Schema(
++            _("MTU of the provider network."),
++            type=attributes.Schema.NUMBER
++        ),
++        STATUS: attributes.Schema(
++            _("The status of the provider network."),
++            type=attributes.Schema.STRING
++        ),
++        DESCRIPTION: attributes.Schema(
++            _("The description of the provider network."),
++            type=attributes.Schema.STRING
++        ),
++        VLAN_TRANSPARENT: attributes.Schema(
++            _("Flag if vlan transparent for the provider network."),
++            type=attributes.Schema.BOOLEAN
++        ),
++    }
++
++    def validate(self):
++        super(ProviderNet, self).validate()
++
++    def handle_create(self):
++        props = self.prepare_properties(
++            self.properties,
++            self.physical_resource_name())
++        neutron_object = self.client().create_providernet(
++            {self.neutron_api_key: props})[self.neutron_api_key]
++        self.resource_id_set(neutron_object['id'])
++
++    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
++        if prop_diff:
++            self.prepare_update_properties(prop_diff)
++            self.client().update_providernet(self.resource_id,
++                                             {self.neutron_api_key: prop_diff})
++
++    def _show_resource(self):
++        return self.client().show_providernet(
++            self.resource_id)[self.neutron_api_key]
++
++    def check_create_complete(self, *args):
++        attributes = self._show_resource()
++        return self.is_built(attributes)
++
++    def check_update_complete(self, *args):
++        attributes = self._show_resource()
++        return self.is_built(attributes)
++
++    def handle_delete(self):
++        if self.resource_id is None:
++            return
++        try:
++            self.client().delete_providernet(self.resource_id)
++        except neutron_exp.NeutronClientException as ex:
++            self.client_plugin().ignore_not_found(ex)
++        else:
++            return True
++
++
++def resource_mapping():
++    return {
++        'WR::Neutron::ProviderNet': ProviderNet,
++    }
+diff --git a/heat/engine/resources/wr/neutron_provider_net_range.py b/heat/engine/resources/wr/neutron_provider_net_range.py
+new file mode 100644
+index 0000000..2e5572f
+--- /dev/null
++++ b/heat/engine/resources/wr/neutron_provider_net_range.py
+@@ -0,0 +1,199 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++#
++# Copyright (c) 2013-2014 Wind River Systems, Inc.
++#
++#
++#
++#
++#
++
++from heat.common.i18n import _
++from heat.engine import attributes
++from heat.engine import constraints
++from heat.engine import properties
++from heat.engine.resources.openstack.neutron import neutron
++
++from oslo_log import log as logging
++
++import neutronclient.common.exceptions as neutron_exp
++
++LOG = logging.getLogger(__name__)
++
++
++class ProviderNetRange(neutron.NeutronResource):
++    """A resource for managing WR Neutron Provider Network Range.
++
++    The WR Neutron Provider Network Range adds range capabilities to the
++    WR Neutron Provider Network resource.
++    """
++
++    neutron_api_key = 'providernet_range'
++
++    PROPERTIES = (
++        PROVIDERNET_ID, NAME,
++        MINIMUM, MAXIMUM,
++        DESCRIPTION, SHARED,
++        TENANT_ID, GROUP,
++        TTL, PORT,
++    ) = (
++        'providernet_id', 'name',
++        'minimum', 'maximum',
++        'description', 'shared',
++        'tenant_id', 'group',
++        'ttl', 'port',
++    )
++
++    ATTRIBUTES = (
++        NAME, DESCRIPTION, SHARED, MINIMUM, MAXIMUM,
++    ) = (
++        'name', 'description', 'shared', 'minimum', 'maximum'
++    )
++
++    properties_schema = {
++        PROVIDERNET_ID: properties.Schema(
++            properties.Schema.STRING,
++            _('ID of the existing provider network.'),
++            required=True,
++        ),
++        NAME: properties.Schema(
++            properties.Schema.STRING,
++            _('Name of the provider network range.'),
++            required=True,
++        ),
++        MINIMUM: properties.Schema(
++            properties.Schema.NUMBER,
++            _('Minimum value for the range for this provider network range.'),
++            required=True,
++            update_allowed=True,
++        ),
++        MAXIMUM: properties.Schema(
++            properties.Schema.NUMBER,
++            _('Maximum value for the range for this provider network range.'),
++            required=True,
++            update_allowed=True,
++        ),
++        DESCRIPTION: properties.Schema(
++            properties.Schema.STRING,
++            _('Description for this provider network range.'),
++            update_allowed=True,
++        ),
++        SHARED: properties.Schema(
++            properties.Schema.BOOLEAN,
++            _('Whether provider network range is SHARED for all tenants.'),
++            default=False,
++        ),
++        TENANT_ID: properties.Schema(
++            properties.Schema.STRING,
++            _('Tenant ID to assign to this range. '
++              'Note: Only applied if range is not SHARED.'),
++            constraints=[
++                constraints.CustomConstraint('keystone.project')
++            ],
++        ),
++        GROUP: properties.Schema(
++            properties.Schema.STRING,
++            _('Multicast IP addresses for VXLAN endpoints. '
++              'Note: Only applied if provider net is VXLAN.'),
++            update_allowed=True,
++        ),
++        TTL: properties.Schema(
++            properties.Schema.NUMBER,
++            _('Time-to-live value for VXLAN provider networks. '
++              'Note: Only applied if provider net is VXLAN.'),
++            update_allowed=True,
++        ),
++        PORT: properties.Schema(
++            properties.Schema.NUMBER,
++            _('Destination UDP port value to use for VXLAN provider networks. '
++              'Note: Only valid values are 4789 or 8472. '
++              'Note: Only applied if provider net is VXLAN. Default: 4789.'),
++            update_allowed=True,
++            constraints=[
++                constraints.AllowedValues([4789, 8472]),
++            ],
++        ),
++    }
++
++    # Base class already has "show"
++    attributes_schema = {
++        NAME: attributes.Schema(
++            _("The name of the provider network range."),
++            type=attributes.Schema.STRING
++        ),
++        DESCRIPTION: attributes.Schema(
++            _("The description of the provider network range."),
++            type=attributes.Schema.STRING
++        ),
++        MAXIMUM: attributes.Schema(
++            _('Maximum value for the range for this provider network range.'),
++            type=attributes.Schema.NUMBER
++        ),
++        MINIMUM: attributes.Schema(
++            _('Minimum value for the range for this provider network range.'),
++            type=attributes.Schema.NUMBER
++        ),
++        SHARED: attributes.Schema(
++            _('Whether this provider network range is shared or not.'),
++            type=attributes.Schema.BOOLEAN
++        ),
++    }
++
++    def validate(self):
++        super(ProviderNetRange, self).validate()
++
++    def prepare_properties(self, properties, name):
++        props = super(ProviderNetRange, self).prepare_properties(properties,
++                                                                 name)
++        tenant = props.get(self.TENANT_ID)
++        if tenant:
++            # keystone project-list is the same as openstack tenant list"
++            tenant_id = self.client_plugin('keystone').get_project_id(tenant)
++            props[self.TENANT_ID] = tenant_id
++        return props
++
++    def handle_create(self):
++        props = self.prepare_properties(
++            self.properties,
++            self.physical_resource_name())
++
++        neutron_object = self.client().create_providernet_range(
++            {self.neutron_api_key: props})[self.neutron_api_key]
++        self.resource_id_set(neutron_object['id'])
++
++    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
++        if prop_diff:
++            self.prepare_update_properties(prop_diff)
++            self.client().update_providernet_range(
++                self.resource_id,
++                {self.neutron_api_key: prop_diff})
++
++    def _show_resource(self):
++        return self.client().show_providernet_range(
++            self.resource_id)[self.neutron_api_key]
++
++    def handle_delete(self):
++        if self.resource_id is None:
++            return
++        try:
++            self.client().delete_providernet_range(self.resource_id)
++        except neutron_exp.NeutronClientException as ex:
++            self.client_plugin().ignore_not_found(ex)
++        else:
++            return True
++
++
++def resource_mapping():
++    return {
++        'WR::Neutron::ProviderNetRange': ProviderNetRange,
++    }
+diff --git a/heat/tests/wr/test_neutron_provider_net.py b/heat/tests/wr/test_neutron_provider_net.py
+new file mode 100644
+index 0000000..73d00b4
+--- /dev/null
++++ b/heat/tests/wr/test_neutron_provider_net.py
+@@ -0,0 +1,261 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import copy
++
++from neutronclient.common import exceptions
++from neutronclient.v2_0 import client as neutronclient
++import six
++
++from heat.common import exception
++from heat.common import template_format
++from heat.engine.resources.wr import neutron_provider_net as pnr
++from heat.engine import rsrc_defn
++from heat.engine import scheduler
++from heat.tests import common
++from heat.tests import utils
++
++
++providernet_template = '''
++heat_template_version: 2015-04-30
++description: This template defines a provider net
++resources:
++  my_providernet:
++    type: WR::Neutron::ProviderNet
++    properties:
++         name : sample_providernet
++         description: 'providernet description'
++         type: vlan
++         mtu: 1500
++'''
++
++pr_dict_id = "9649c220-874e-443c-a2ab-d6ac7ccf7b35"
++pr_dict_done = {
++    "providernet": {
++        "status": "DOWN",
++        "description": "providernet description",
++        "mtu": 1500,
++        "ranges": [],
++        "type": "vlan",
++        "id": pr_dict_id,
++        "name": "sample_providernet",
++        "vlan_transparent": False,
++    }
++}
++
++pr_dict_build = copy.deepcopy(pr_dict_done)
++pr_dict_build['providernet']['status'] = "BUILD"
++
++
++def stub_fn(*args):
++    pass
++
++
++class NeutronProviderNetTest(common.HeatTestCase):
++    def setUp(self):
++        super(NeutronProviderNetTest, self).setUp()
++        # If we are using a version of NeutronClient without WRS enhancements
++        # we must update the client instance using setattr BEFORE we can stub
++        try:
++            print(neutronclient.Client.create_providernet)
++        except Exception:
++            # Assume that if create_portforwarding is missing all 4 are missing
++            setattr(neutronclient.Client, 'create_providernet', stub_fn)
++            setattr(neutronclient.Client, 'delete_providernet', stub_fn)
++            setattr(neutronclient.Client, 'show_providernet', stub_fn)
++            setattr(neutronclient.Client, 'update_providernet', stub_fn)
++
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'create_providernet')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'delete_providernet')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'show_providernet')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'update_providernet')
++
++    def create_providernet(self):
++        neutronclient.Client.create_providernet({
++            'providernet': {
++                'name': 'sample_providernet',
++                'description': 'providernet description',
++                'type': 'vlan',
++                'mtu': 1500,
++                'vlan_transparent': False,
++            }
++        }).AndReturn(pr_dict_done)
++
++        neutronclient.Client.show_providernet(
++            pr_dict_id
++        ).AndReturn(pr_dict_build)
++
++        neutronclient.Client.show_providernet(
++            pr_dict_id
++        ).AndReturn(pr_dict_done)
++
++        snippet = template_format.parse(providernet_template)
++        self.stack = utils.parse_stack(snippet)
++        resource_defns = self.stack.t.resource_definitions(self.stack)
++        return pnr.ProviderNet('providernet',
++                               resource_defns['my_providernet'],
++                               self.stack)
++
++    def test_create(self):
++        rsrc = self.create_providernet()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_create_failed(self):
++        # This template is valid, but simulate a failure
++        neutronclient.Client.create_providernet({
++            'providernet': {
++                'name': 'sample_providernet',
++                'description': 'providernet description',
++                'type': 'vlan',
++                'mtu': 1500,
++                'vlan_transparent': False,
++            }
++        }).AndRaise(exceptions.NeutronClientException())
++        self.m.ReplayAll()
++
++        snippet = template_format.parse(providernet_template)
++        stack = utils.parse_stack(snippet)
++        resource_defns = stack.t.resource_definitions(stack)
++        rsrc = pnr.ProviderNet(
++            'providernet', resource_defns['my_providernet'], stack)
++
++        error = self.assertRaises(exception.ResourceFailure,
++                                  scheduler.TaskRunner(rsrc.create))
++        self.assertEqual(
++            'NeutronClientException: resources.providernet:'
++            ' An unknown exception occurred.',
++            six.text_type(error))
++        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete(self):
++        rsrc = self.create_providernet()
++        neutronclient.Client.delete_providernet(pr_dict_id)
++        neutronclient.Client.show_providernet(pr_dict_id).AndRaise(
++            exceptions.NeutronClientException(status_code=404))
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        scheduler.TaskRunner(rsrc.delete)()
++        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete_already_gone(self):
++        neutronclient.Client.delete_providernet(pr_dict_id).AndRaise(
++            exceptions.NeutronClientException(status_code=404))
++
++        rsrc = self.create_providernet()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        scheduler.TaskRunner(rsrc.delete)()
++        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete_failed(self):
++        neutronclient.Client.delete_providernet(pr_dict_id).AndRaise(
++            exceptions.NeutronClientException(status_code=400))
++
++        rsrc = self.create_providernet()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.ResourceFailure,
++                                  scheduler.TaskRunner(rsrc.delete))
++        self.assertEqual(
++            'NeutronClientException: resources.providernet:'
++            ' An unknown exception occurred.',
++            six.text_type(error))
++        self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_attribute(self):
++        rsrc = self.create_providernet()
++        neutronclient.Client.show_providernet(pr_dict_id).MultipleTimes(
++        ).AndReturn({
++            'providernet': {
++                'providernet_id': '1234',
++                'name': 'sample_providernet',
++                'description': 'providernet description',
++                'minimum': 10,
++                'maximum': 10,
++                'shared': True,
++            }
++        })
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertDictContainsSubset({'name': 'sample_providernet'},
++                                      rsrc.FnGetAtt('show'))
++        self.m.VerifyAll()
++
++    def test_attribute_failed(self):
++        rsrc = self.create_providernet()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.InvalidTemplateAttribute,
++                                  rsrc.FnGetAtt, 'FOO')
++        self.assertEqual(
++            'The Referenced Attribute (providernet FOO) is '
++            'incorrect.', six.text_type(error))
++        self.m.VerifyAll()
++
++    # "tenant_id" is not an exposed attribute
++    def test_attribute_not_exposed(self):
++        rsrc = self.create_providernet()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.InvalidTemplateAttribute,
++                                  rsrc.FnGetAtt, 'tenant_id')
++        self.assertEqual(
++            'The Referenced Attribute (providernet tenant_id) is '
++            'incorrect.', six.text_type(error))
++        self.m.VerifyAll()
++
++    def mock_update_providernet(self,
++                                update_props,
++                                providernet_id=pr_dict_id):
++        neutronclient.Client.update_providernet(
++            providernet_id,
++            {'providernet': update_props}).AndReturn(None)
++
++    def test_update(self):
++        rsrc = self.create_providernet()
++
++        new_description = 'new description'
++        # We MUST pass the entire structure to an update
++        # We only pass the values that are editable
++        update_props = {}
++        update_props['description'] = new_description
++
++        self.mock_update_providernet(update_props)
++        pr_dict_changed = copy.deepcopy(pr_dict_done)
++        pr_dict_changed['providernet']['description'] = new_description
++        neutronclient.Client.show_providernet(
++            pr_dict_id
++        ).AndReturn(pr_dict_changed)
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++
++        # Do an update
++        props = copy.deepcopy(rsrc.properties.data)
++        props['description'] = new_description
++        snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
++        scheduler.TaskRunner(rsrc.update, snippet)()
++
++        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
+diff --git a/heat/tests/wr/test_neutron_provider_net_range.py b/heat/tests/wr/test_neutron_provider_net_range.py
+new file mode 100644
+index 0000000..49e3291
+--- /dev/null
++++ b/heat/tests/wr/test_neutron_provider_net_range.py
+@@ -0,0 +1,232 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import copy
++
++from neutronclient.common import exceptions
++from neutronclient.v2_0 import client as neutronclient
++import six
++
++from heat.common import exception
++from heat.common import template_format
++from heat.engine.resources.wr import neutron_provider_net_range as pnr
++from heat.engine import rsrc_defn
++from heat.engine import scheduler
++from heat.tests import common
++from heat.tests import utils
++
++
++providernet_range_template = '''
++heat_template_version: 2013-05-23
++description: This template defines a provider net range
++resources:
++  my_providernet_range:
++    type: WR::Neutron::ProviderNetRange
++    properties:
++         providernet_id: '1234'
++         name : sample_providernet_range
++         description: 'providernet_range description'
++         minimum: 10
++         maximum: 10
++         shared: true
++'''
++
++
++def stub_fn(*args):
++    pass
++
++
++class NeutronProviderNetRangeTest(common.HeatTestCase):
++    def setUp(self):
++        super(NeutronProviderNetRangeTest, self).setUp()
++        # If we are using a version of NeutronClient without WRS enhancements
++        # we must update the client instance using setattr BEFORE we can stub
++        try:
++            print(neutronclient.Client.create_providernet_range)
++        except Exception:
++            # Assume that if create_portforwarding is missing all 4 are missing
++            setattr(neutronclient.Client, 'create_providernet_range', stub_fn)
++            setattr(neutronclient.Client, 'delete_providernet_range', stub_fn)
++            setattr(neutronclient.Client, 'show_providernet_range', stub_fn)
++            setattr(neutronclient.Client, 'update_providernet_range', stub_fn)
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'create_providernet_range')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'delete_providernet_range')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'show_providernet_range')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'update_providernet_range')
++
++    def create_providernet_range(self):
++        neutronclient.Client.create_providernet_range({
++            'providernet_range': {
++                'providernet_id': '1234',
++                'name': 'sample_providernet_range',
++                'description': 'providernet_range description',
++                'minimum': 10,
++                'maximum': 10,
++                'shared': True,
++            }
++        }).AndReturn({'providernet_range': {'id': '5678'}})
++
++        snippet = template_format.parse(providernet_range_template)
++        self.stack = utils.parse_stack(snippet)
++        resource_defns = self.stack.t.resource_definitions(self.stack)
++        return pnr.ProviderNetRange('providernet_range',
++                                    resource_defns['my_providernet_range'],
++                                    self.stack)
++
++    def test_create(self):
++        rsrc = self.create_providernet_range()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_create_failed(self):
++        # This template is valid, but simulate a failure
++        neutronclient.Client.create_providernet_range({
++            'providernet_range': {
++                'providernet_id': '1234',
++                'name': 'sample_providernet_range',
++                'description': 'providernet_range description',
++                'minimum': 10,
++                'maximum': 10,
++                'shared': True,
++            }
++        }).AndRaise(exceptions.NeutronClientException())
++        self.m.ReplayAll()
++
++        snippet = template_format.parse(providernet_range_template)
++        stack = utils.parse_stack(snippet)
++        resource_defns = stack.t.resource_definitions(stack)
++        rsrc = pnr.ProviderNetRange(
++            'providernet_range', resource_defns['my_providernet_range'], stack)
++
++        error = self.assertRaises(exception.ResourceFailure,
++                                  scheduler.TaskRunner(rsrc.create))
++        self.assertEqual(
++            'NeutronClientException: resources.providernet_range:'
++            ' An unknown exception occurred.',
++            six.text_type(error))
++        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete(self):
++        neutronclient.Client.delete_providernet_range('5678')
++        neutronclient.Client.show_providernet_range('5678').AndRaise(
++            exceptions.NeutronClientException(status_code=404))
++        rsrc = self.create_providernet_range()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        scheduler.TaskRunner(rsrc.delete)()
++        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete_already_gone(self):
++        neutronclient.Client.delete_providernet_range('5678').AndRaise(
++            exceptions.NeutronClientException(status_code=404))
++
++        rsrc = self.create_providernet_range()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        scheduler.TaskRunner(rsrc.delete)()
++        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete_failed(self):
++        neutronclient.Client.delete_providernet_range('5678').AndRaise(
++            exceptions.NeutronClientException(status_code=400))
++
++        rsrc = self.create_providernet_range()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.ResourceFailure,
++                                  scheduler.TaskRunner(rsrc.delete))
++        self.assertEqual(
++            'NeutronClientException: resources.providernet_range:'
++            ' An unknown exception occurred.',
++            six.text_type(error))
++        self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_attribute(self):
++        rsrc = self.create_providernet_range()
++        neutronclient.Client.show_providernet_range('5678').MultipleTimes(
++        ).AndReturn({
++            'providernet_range': {
++                'providernet_id': '1234',
++                'name': 'sample_providernet_range',
++                'description': 'providernet_range description',
++                'minimum': 10,
++                'maximum': 10,
++                'shared': True,
++            }
++        })
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertDictContainsSubset({'name': 'sample_providernet_range'},
++                                      rsrc.FnGetAtt('show'))
++        self.m.VerifyAll()
++
++    def test_attribute_failed(self):
++        rsrc = self.create_providernet_range()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.InvalidTemplateAttribute,
++                                  rsrc.FnGetAtt, 'FOO')
++        self.assertEqual(
++            'The Referenced Attribute (providernet_range FOO) is '
++            'incorrect.', six.text_type(error))
++        self.m.VerifyAll()
++
++    # "tenant_id" is not an exposed attribute.
++    def test_attribute_not_exposed(self):
++        rsrc = self.create_providernet_range()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.InvalidTemplateAttribute,
++                                  rsrc.FnGetAtt, 'tenant_id')
++        self.assertEqual(
++            'The Referenced Attribute (providernet_range tenant_id) is '
++            'incorrect.', six.text_type(error))
++        self.m.VerifyAll()
++
++    def mock_update_providernet_range(self,
++                                      update_props,
++                                      providernet_range_id='5678'):
++        neutronclient.Client.update_providernet_range(
++            providernet_range_id,
++            {'providernet_range': update_props}).AndReturn(None)
++
++    def test_update(self):
++        rsrc = self.create_providernet_range()
++
++        new_description = 'new description'
++        update_props = {}
++        update_props['description'] = new_description
++
++        self.mock_update_providernet_range(update_props)
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++
++        # Do an update
++        props = copy.deepcopy(rsrc.properties.data)
++        props['description'] = new_description
++        snippet = rsrc_defn.ResourceDefinition(rsrc.name, rsrc.type(), props)
++        scheduler.TaskRunner(rsrc.update, snippet)()
++
++        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
+-- 
+2.7.4
+

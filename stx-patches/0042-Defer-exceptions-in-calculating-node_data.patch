@@ -1,0 +1,156 @@
+From 625ad895f3c8b915e7959abd898ccc4611dd5ea8 Mon Sep 17 00:00:00 2001
+From: Thomas Herve <therve@redhat.com>
+Date: Fri, 22 Sep 2017 16:44:51 +0200
+Subject: [PATCH 42/57] Defer exceptions in calculating node_data()
+
+When generating the node_data() for a resource, catch and store any
+exceptions (other than InvalidTemplateAttribute) encountered while
+getting attributes. Re-raise the exception at the point where we try to
+read the attribute value, including where we try to serialise the
+NodeData object to store in the database.
+
+In convergence, we generate and immediately serialise the NodeData, so
+this should result in no substantial change in behaviour there.
+
+In other situations (e.g. when we're just loading the data to show the
+stack), this prevents an error in attribute calculation from aborting
+the whole operation. The exception will still be raised if (and only if)
+the erroneous attribute is accessed, but may be handled more
+appropriately. For example, errors in calculating output values are
+handled by reporting an error only for that particular output.
+
+Change-Id: Idc97aee87405cc13e83be3373078b52e725850ea
+Co-Authored-By: Zane Bitter <zbitter@redhat.com>
+Closes-Bug: #1712280
+(cherry picked from commit 4f4932c7900ae0e88e9a44f06b952c882474729e)
+---
+ heat/engine/node_data.py                           | 19 ++++++--
+ heat/engine/resource.py                            |  8 ++++
+ .../functional/test_stack_outputs.py               | 54 ++++++++++++++++++++++
+ 3 files changed, 77 insertions(+), 4 deletions(-)
+
+diff --git a/heat/engine/node_data.py b/heat/engine/node_data.py
+index 91a1143..06580cb 100644
+--- a/heat/engine/node_data.py
++++ b/heat/engine/node_data.py
+@@ -51,13 +51,20 @@ class NodeData(object):
+ 
+     def attributes(self):
+         """Return a dict of all available top-level attribute values."""
+-        return {k: v
+-                for k, v in self._attributes.items()
+-                if isinstance(k, six.string_types)}
++        attrs = {k: v
++                 for k, v in self._attributes.items()
++                 if isinstance(k, six.string_types)}
++        for v in six.itervalues(attrs):
++            if isinstance(v, Exception):
++                raise v
++        return attrs
+ 
+     def attribute(self, attr_name):
+         """Return the specified attribute value."""
+-        return self._attributes[attr_name]
++        val = self._attributes[attr_name]
++        if isinstance(val, Exception):
++            raise val
++        return val
+ 
+     def attribute_names(self):
+         """Iterate over valid top-level attribute names."""
+@@ -73,6 +80,10 @@ class NodeData(object):
+         This is the format that is serialised and stored in the database's
+         SyncPoints.
+         """
++        for v in six.itervalues(self._attributes):
++            if isinstance(v, Exception):
++                raise v
++
+         return {
+             'id': self.primary_key,
+             'name': self.name,
+diff --git a/heat/engine/resource.py b/heat/engine/resource.py
+index 757fbc0..177cc4f 100644
+--- a/heat/engine/resource.py
++++ b/heat/engine/resource.py
+@@ -1032,7 +1032,15 @@ class Resource(status.ResourceStatus):
+                     try:
+                         yield attr, self.FnGetAtt(*path)
+                     except exception.InvalidTemplateAttribute as ita:
++                        # Attribute doesn't exist, so don't store it. Whatever
++                        # tries to access it will get another
++                        # InvalidTemplateAttribute exception at that point
+                         LOG.info('%s', ita)
++                    except Exception as exc:
++                        # Store the exception that occurred. It will be
++                        # re-raised when something tries to access it, or when
++                        # we try to serialise the NodeData.
++                        yield attr, exc
+ 
+         load_all = not self.stack.in_convergence_check
+         dep_attrs = self.referenced_attrs(stk_defn,
+diff --git a/heat_integrationtests/functional/test_stack_outputs.py b/heat_integrationtests/functional/test_stack_outputs.py
+index 161e0b3..b7d7cd6 100644
+--- a/heat_integrationtests/functional/test_stack_outputs.py
++++ b/heat_integrationtests/functional/test_stack_outputs.py
+@@ -99,3 +99,57 @@ outputs:
+         actual_output_value = self.client.stacks.output_show(
+             stack_identifier, 'output_value')['output']
+         self.assertEqual(expected_output_value, actual_output_value)
++
++    nested_template = '''
++heat_template_version: 2015-10-15
++resources:
++  parent:
++    type: 1.yaml
++outputs:
++  resource_output_a:
++    value: { get_attr: [parent, resource_output_a] }
++    description: 'parent a'
++  resource_output_b:
++    value: { get_attr: [parent, resource_output_b] }
++    description: 'parent b'
++    '''
++    error_template = '''
++heat_template_version: 2015-10-15
++resources:
++  test_resource_a:
++    type: OS::Heat::TestResource
++    properties:
++      value: 'a'
++  test_resource_b:
++    type: OS::Heat::TestResource
++    properties:
++      value: 'b'
++outputs:
++  resource_output_a:
++    description: 'Output of resource a'
++    value: { get_attr: [test_resource_a, output] }
++  resource_output_b:
++    description: 'Output of resource b'
++    value: { get_param: foo }
++'''
++
++    def test_output_error_nested(self):
++        stack_identifier = self.stack_create(
++            template=self.nested_template,
++            files={'1.yaml': self.error_template}
++        )
++        self.update_stack(stack_identifier, template=self.nested_template,
++                          files={'1.yaml': self.error_template})
++        expected_list = [{u'output_key': u'resource_output_a',
++                          u'output_value': u'a',
++                          u'description': u'parent a'},
++                         {u'output_key': u'resource_output_b',
++                          u'output_value': None,
++                          u'output_error': u'Error in parent output '
++                                           u'resource_output_b: The Parameter'
++                                           u' (foo) was not provided.',
++                          u'description': u'parent b'}]
++
++        actual_list = self.client.stacks.get(stack_identifier).outputs
++        sorted_actual_list = sorted(actual_list, key=lambda x: x['output_key'])
++        self.assertEqual(expected_list, sorted_actual_list)
+-- 
+2.7.4
+

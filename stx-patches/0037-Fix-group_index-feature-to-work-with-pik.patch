@@ -1,0 +1,53 @@
+From f59637a7901f52c98a27a0a3d9ebdb144815cd5d Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Thu, 16 Nov 2017 16:34:25 -0600
+Subject: [PATCH 37/57] Fix group_index feature to work with pike refactoring
+
+This should be squashed with the group_index feature next rebase
+---
+ heat/engine/hot/functions.py | 26 ++++++++++++++------------
+ 1 file changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/heat/engine/hot/functions.py b/heat/engine/hot/functions.py
+index e2a1681..73ac65b 100644
+--- a/heat/engine/hot/functions.py
++++ b/heat/engine/hot/functions.py
+@@ -1661,21 +1661,23 @@ class GroupIndex(function.Function):
+ 
+     # returns a number
+     def find_group_index(self, stk, target):
+-        p_stk = stk.parent_resource
+-        if p_stk is None:
++        p_proxy = stk.parent_resource
++        if p_proxy is None:
+             return -1
+-        # grouputils.get_members only works on nested
+-        if hasattr(p_stk, 'nested'):
+-            members = grouputils.get_members(p_stk)
+-            count = 0
+-            for memb in members:
+-                if memb.FnGetRefId() == target:
+-                    return count
+-                count += 1
++        p_stk = p_proxy._stack()
++        if target is not None:
++            for res in p_stk.iter_resources():
++                if res.has_nested():
++                    members = grouputils.get_members(res)
++                    count = 0
++                    for memb in members:
++                        if memb.FnGetRefId() == target:
++                            return count
++                        count += 1
+         # Recurse to parent stack, using parent stack refid as the target
+-        return self.find_group_index(p_stk.stack, p_stk.FnGetRefId())
++        return self.find_group_index(p_stk, p_proxy.name)
+ 
+     def result(self):
+-        # Using None as the target,
++        # First pass has no target
+         r = self.find_group_index(self.stack, None)
+         return str(r)
+-- 
+2.7.4
+

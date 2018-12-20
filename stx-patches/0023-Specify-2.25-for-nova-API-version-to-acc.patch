@@ -1,0 +1,45 @@
+From 68382a3174faa78eb132d79a1c1d83b2c56383cc Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 17:18:25 -0500
+Subject: [PATCH 23/57] Specify 2.25 for nova API version to access TiS extensions
+
+Update nova client used by HEAT to access TiS extensions
+
+The openstack nova client in newton used by heat will use  Major=2, Minor=1 by default.
+With this change, it will use Minor=25 which enables the extensions added in TiS to be invoked using HEAT.
+One of those extensions is the wrs-sg extensions like best_effort and group_size
+---
+ heat/engine/clients/os/nova.py         | 3 ++-
+ heat/tests/clients/test_nova_client.py | 2 +-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/heat/engine/clients/os/nova.py b/heat/engine/clients/os/nova.py
+index bdd45b7..c51893b 100644
+--- a/heat/engine/clients/os/nova.py
++++ b/heat/engine/clients/os/nova.py
+@@ -60,7 +60,8 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
+ 
+     exceptions_module = exceptions
+ 
+-    NOVA_API_VERSION = '2.1'
++    # WRS Changing this from 2.1 to 2.25
++    NOVA_API_VERSION = "2.25"
+ 
+     validate_versions = [
+         V2_2, V2_8, V2_10, V2_15, V2_26, V2_37, V2_42
+diff --git a/heat/tests/clients/test_nova_client.py b/heat/tests/clients/test_nova_client.py
+index 09b70c8..5402cd7 100644
+--- a/heat/tests/clients/test_nova_client.py
++++ b/heat/tests/clients/test_nova_client.py
+@@ -48,7 +48,7 @@ class NovaClientPluginTest(NovaClientPluginTestCase):
+         ext_mock = self.patchobject(nc, 'discover_extensions')
+         plugin = context.clients.client_plugin('nova')
+         client = plugin.client()
+-        ext_mock.assert_called_once_with('2.1')
++        ext_mock.assert_called_once_with('2.25')
+         self.assertIsNotNone(client.servers)
+ 
+     def test_v2_26_create(self):
+-- 
+2.7.4
+

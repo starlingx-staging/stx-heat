@@ -1,0 +1,53 @@
+From b66ad2178cdcc6a8a84faeb8d23f498bb8bf56b0 Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Fri, 12 Jan 2018 12:46:00 -0600
+Subject: [PATCH 49/57] Ensure a heat process terminates when it cannot release a stack lock
+
+ensure that if the thread exit does not teardown
+the process after 1 second, the non blockable os level exit call will be invoked.
+
+Testing this in vbox I was able to see this sequence of logs
+
+FATAL. Failed stack_lock release. Exiting:
+...(after 1 second) ...
+Graceful exit timeout exceeded, forcing exit.
+---
+ heat/engine/service.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/heat/engine/service.py b/heat/engine/service.py
+index ae854ca..7a1891f 100644
+--- a/heat/engine/service.py
++++ b/heat/engine/service.py
+@@ -17,6 +17,7 @@ import functools
+ import itertools
+ import os
+ import pydoc
++import signal
+ import socket
+ import sys
+ 
+@@ -179,6 +180,10 @@ class ThreadGroupManager(object):
+         :param kwargs: Keyword-args to be passed to func
+ 
+         """
++        def _force_exit(*args):
++            LOG.info('Graceful exit timeout exceeded, forcing exit.')
++            os._exit(-1)
++
+         def release(gt):
+             """Callback function that will be passed to GreenThread.link().
+ 
+@@ -195,6 +200,9 @@ class ThreadGroupManager(object):
+                     lock.release()
+                 except Exception:
+                     LOG.exception("FATAL. Failed stack_lock release. Exiting")
++                    # allow up to 1 second for sys.exit to gracefully shutdown
++                    signal.signal(signal.SIGALRM, _force_exit)
++                    signal.alarm(1)
+                     sys.exit(-1)
+ 
+         # Link to self to allow the stack to run tasks
+-- 
+2.7.4
+

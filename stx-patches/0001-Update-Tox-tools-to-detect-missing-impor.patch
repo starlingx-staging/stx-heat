@@ -1,0 +1,53 @@
+From eef2193d6a0b3fa35b85de2a39c6737289bb4740 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 11:05:23 -0500
+Subject: [PATCH 01/57] Update Tox tools to detect missing imports
+
+ALso Allow tox -e cover to work for HEAT
+This will generate a coverage.xml file which can be cobertura processed in jenkins
+---
+ .gitignore | 1 +
+ tox.ini    | 7 ++++++-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/.gitignore b/.gitignore
+index 073858c..266af10 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -16,6 +16,7 @@ templates/cloudformation-examples
+ .coverage
+ .coverage.*
+ cover
++coverage.xml
+ .testrepository
+ .project
+ .pydevproject
+diff --git a/tox.ini b/tox.ini
+index 02094ab..0c8ff0d 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -19,6 +19,7 @@ commands =
+ whitelist_externals =
+   bash
+   find
++  rm
+ passenv = http_proxy HTTP_PROXY https_proxy HTTPS_PROXY no_proxy NO_PROXY
+ 
+ [testenv:py27log]
+@@ -50,8 +51,12 @@ commands = {posargs}
+ 
+ [testenv:cover]
+ commands =
++  find . -type f -name ".coverage\.*" -delete
++  rm -f .coverage
++  rm -Rf cover
++  rm -f coverage.xml
+   python setup.py testr --coverage --testr-args='^(?!heat_integrationtests){posargs}'
+-  coverage report
++  coverage xml
+ 
+ [testenv:docs]
+ deps = -r{toxinidir}/requirements.txt
+-- 
+2.7.4
+

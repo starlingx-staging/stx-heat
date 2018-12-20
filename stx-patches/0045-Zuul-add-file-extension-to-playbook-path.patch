@@ -1,0 +1,32 @@
+From c756121e18854928e1f6097a4d1bdcb9b0c97f00 Mon Sep 17 00:00:00 2001
+From: "James E. Blair" <jeblair@redhat.com>
+Date: Tue, 28 Nov 2017 16:16:24 -0800
+Subject: [PATCH 45/57] Zuul: add file extension to playbook path
+
+Zuul now supports including the file extension on the playbook path
+and omitting the extension is now deprecrated.  Update references
+to include the extension.
+
+Change-Id: I60d9a92683bc7ec5f9ef204f147a18de9c99e9c7
+---
+ .zuul.yaml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.zuul.yaml b/.zuul.yaml
+index bbc7a8b..5ac05a0 100644
+--- a/.zuul.yaml
++++ b/.zuul.yaml
+@@ -1,8 +1,8 @@
+ - job:
+     name: heat-functional-devstack-base
+     parent: legacy-dsvm-base
+-    run: playbooks/devstack/functional/run
+-    post-run: playbooks/devstack/functional/post
++    run: playbooks/devstack/functional/run.yaml
++    post-run: playbooks/devstack/functional/post.yaml
+     timeout: 7800
+     required-projects:
+       - openstack-infra/devstack-gate
+-- 
+2.7.4
+

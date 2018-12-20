@@ -1,0 +1,304 @@
+From bd1665f7cbacf3a96cfbfc6c0b92c85c4a9e99f7 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 17:49:06 -0500
+Subject: [PATCH 24/57] Support stack-update of userdata as part of a server rebuild
+
+Support for stack-update of userdata as part of a server rebuild
+
+This commit requires a nova and novaclient commit to provide the underlying api support
+to change userdata as part of a stack-update, which triggers into a nova rebuild
+
+Squashed during rebase to include commit to support for setting empty string as replacement userdata
+The previous submission treated an empty string like None.  The new logic treats it
+as a new empty userdata value.
+
+Squashed to include commit:
+Added support for userdata rebuild on volume based VM's
+---
+ heat/engine/clients/os/nova.py                 |   6 +-
+ heat/engine/resources/openstack/nova/server.py |  67 ++++++++++++++--
+ heat/tests/openstack/nova/test_server.py       | 107 ++++++++++++++++++++++++-
+ 3 files changed, 169 insertions(+), 11 deletions(-)
+
+diff --git a/heat/engine/clients/os/nova.py b/heat/engine/clients/os/nova.py
+index c51893b..67240ca 100644
+--- a/heat/engine/clients/os/nova.py
++++ b/heat/engine/clients/os/nova.py
+@@ -588,13 +588,15 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
+                 result=msg, resource_status=status)
+ 
+     def rebuild(self, server_id, image_id, password=None,
+-                preserve_ephemeral=False, meta=None, files=None):
++                preserve_ephemeral=False, meta=None, files=None,
++                userdata=None):
+         """Rebuild the server and call check_rebuild to verify."""
+         server = self.fetch_server(server_id)
+         if server:
+             server.rebuild(image_id, password=password,
+                            preserve_ephemeral=preserve_ephemeral,
+-                           meta=meta, files=files)
++                           meta=meta, files=files,
++                           userdata=userdata)
+             return True
+         else:
+             return False
+diff --git a/heat/engine/resources/openstack/nova/server.py b/heat/engine/resources/openstack/nova/server.py
+index bad7678..6b47746 100644
+--- a/heat/engine/resources/openstack/nova/server.py
++++ b/heat/engine/resources/openstack/nova/server.py
+@@ -562,7 +562,7 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+               'ignoring it or by replacing the entire server.'),
+             default='REPLACE',
+             constraints=[
+-                constraints.AllowedValues(['REPLACE', 'IGNORE']),
++                constraints.AllowedValues(['REPLACE', 'IGNORE', 'REBUILD']),
+             ],
+             support_status=support.SupportStatus(version='6.0.0'),
+             update_allowed=True
+@@ -822,6 +822,13 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+             return sc[rpc_api.SOFTWARE_CONFIG_CONFIG]
+         return ud_content
+ 
++    def build_userdata(self, metadata, ud_content, user_data_format):
++        return self.client_plugin().build_userdata(
++            metadata,
++            ud_content,
++            instance_user=None,
++            user_data_format=user_data_format)
++
+     def handle_create(self):
+         security_groups = self.properties[self.SECURITY_GROUPS]
+ 
+@@ -838,11 +845,7 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+             self._create_transport_credentials(self.properties)
+             self._populate_deployments_metadata(metadata, self.properties)
+ 
+-        userdata = self.client_plugin().build_userdata(
+-            metadata,
+-            ud_content,
+-            instance_user=None,
+-            user_data_format=user_data_format)
++        userdata = self.build_userdata(metadata, ud_content, user_data_format)
+ 
+         availability_zone = self.properties[self.AVAILABILITY_ZONE]
+         instance_meta = self.properties[self.METADATA]
+@@ -1247,6 +1250,13 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+         personality_files = after_props[self.PERSONALITY]
+ 
+         image = after_props[self.IMAGE]
++        #
++        # If we are triggering a rebuild due to userdata
++        # but we are booting off of a volume so no image
++        # information is present
++        if image is None:
++            LOG.warning("No image found, getting image from volume data")
++            image = self._get_image_from_volume()
+         preserve_ephemeral = (
+             image_update_policy == 'REBUILD_PRESERVE_EPHEMERAL')
+         password = after_props[self.ADMIN_PASS]
+@@ -1254,12 +1264,53 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+                   'preserve_ephemeral': preserve_ephemeral,
+                   'meta': instance_meta,
+                   'files': personality_files}
++
++        # pass userdata to rebuild if REBUILD policy selected
++        ud_update_policy = after_props[self.USER_DATA_UPDATE_POLICY]
++        if ud_update_policy == 'REBUILD':
++            # user data can be an empty string, but not None
++            ud_content = after_props[self.USER_DATA]
++            user_data_format = after_props[self.USER_DATA_FORMAT]
++            # Only pass new userdata if it is not None
++            if ud_content is not None:
++                kwargs['userdata'] = self.build_userdata(self.metadata_get(),
++                                                         ud_content,
++                                                         user_data_format)
+         prg = progress.ServerUpdateProgress(self.resource_id,
+                                             'rebuild',
+                                             handler_extra={'args': (image,),
+                                                            'kwargs': kwargs})
+         return prg
+ 
++    def _get_image_from_volume(self):
++        volume_id = ""
++        bdm = self.properties[self.BLOCK_DEVICE_MAPPING]
++        if bdm is not None:
++            for mpg in bdm:
++                device_name = mpg[self.BLOCK_DEVICE_MAPPING_DEVICE_NAME]
++                if device_name == 'vda':
++                    volume_id = mpg.get(self.BLOCK_DEVICE_MAPPING_VOLUME_ID)
++                    break
++        bdm_v2 = self.properties[self.BLOCK_DEVICE_MAPPING_V2]
++        if bdm_v2 is not None:
++            for mpg in bdm_v2:
++                device_name = mpg[self.BLOCK_DEVICE_MAPPING_DEVICE_NAME]
++                if device_name == 'vda':
++                    image_id = mpg.get(self.BLOCK_DEVICE_MAPPING_IMAGE_ID)
++                    if image_id is not None:
++                        return image_id
++                    volume_id = mpg.get(self.BLOCK_DEVICE_MAPPING_VOLUME_ID)
++                    break
++        if volume_id == "":
++            LOG.error("No bootable volume found")
++            raise exception.Error("No rebuildable boot device found")
++        cind = self.client_plugin('cinder')
++        volume = cind.get_volume(volume_id)
++        image_id = ""
++        if volume is not None:
++            image_id = volume.__dict__['volume_image_metadata']['image_id']
++        return image_id
++
+     def _update_networks(self, server, after_props):
+         updaters = []
+         new_networks = after_props[self.NETWORKS]
+@@ -1351,8 +1402,12 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+         if self.FLAVOR in prop_diff:
+             updaters.extend(self._update_flavor(after_props))
+ 
++        ud_update_policy = (prop_diff.get(self.USER_DATA_UPDATE_POLICY) or
++                            self.properties[self.USER_DATA_UPDATE_POLICY])
+         if self.IMAGE in prop_diff:
+             updaters.append(self._update_image(after_props))
++        elif self.USER_DATA in prop_diff and ud_update_policy == 'REBUILD':
++            updaters.append(self._update_image(after_props))
+         elif self.ADMIN_PASS in prop_diff:
+             if not server:
+                 server = self.client_plugin().get_server(self.resource_id)
+diff --git a/heat/tests/openstack/nova/test_server.py b/heat/tests/openstack/nova/test_server.py
+index 4db9d48..aaa456d 100644
+--- a/heat/tests/openstack/nova/test_server.py
++++ b/heat/tests/openstack/nova/test_server.py
+@@ -2208,6 +2208,107 @@ class ServersTest(common.HeatTestCase):
+         scheduler.TaskRunner(server.update, update_template)()
+         self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
+ 
++    # allow a rebuild when userdata updated
++    def _wrs_userdata_rebuild(self, tmpl, server, new_userdata,
++                              formatted_userdata):
++        # Step 1: Setup a fake server to rebuild
++        return_server = self.fc.servers.list()[1]
++        return_server.id = '1234'
++
++        # Step 2: setup the mock environment
++        self.patchobject(server, 'store_external_ports')
++        self.patchobject(nova.NovaClientPlugin, '_create',
++                         return_value=self.fc)
++        self.patchobject(nova.NovaClientPlugin,
++                         'build_userdata',
++                         return_value=formatted_userdata)
++        self.patchobject(self.fc.servers, 'get',
++                         return_value=return_server)
++        mock_rebuild = self.patchobject(self.fc.servers, 'rebuild')
++
++        # Step 3: Do the update
++        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
++        update_props['user_data'] = new_userdata
++        update_template = server.t.freeze(properties=update_props)
++        server.action = server.CREATE
++        scheduler.TaskRunner(server.update, update_template)()
++
++        # Step 4: Verify the rebuild occurred and the results are good
++        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
++        mock_rebuild.assert_called_once_with(
++            return_server, '1', password=None,
++            preserve_ephemeral=False,
++            files={}, meta={}, userdata=formatted_userdata)
++
++    # Test 1: make sure the new REBUILD policy triggers a rebuild
++    @mock.patch.object(servers.Server, 'prepare_for_replace')
++    @mock.patch.object(nova.NovaClientPlugin, '_create')
++    def test_server_update_userdata_policy_rebuild(self, mock_create,
++                                                   mock_replace):
++        stack_name = 'update_userdata_rebuild'
++        (tmpl, stack) = self._setup_test_stack(stack_name)
++        self.patchobject(servers.Server, 'check_update_complete',
++                         return_value=True)
++        # user data format can NOT be updated
++        tmpl['Resources']['WebServer']['Properties'][
++            'user_data_format'] = 'RAW'
++        # update policy can be changed later
++        tmpl['Resources']['WebServer']['Properties'][
++            'user_data_update_policy'] = 'REBUILD'
++        # userdata can be changed later
++        tmpl['Resources']['WebServer']['Properties'][
++            'user_data'] = 'before'
++
++        resource_defns = tmpl.resource_definitions(stack)
++        server = servers.Server('server_update_userdata_rebuild',
++                                resource_defns['WebServer'], stack)
++        update_props = tmpl.t['Resources']['WebServer']['Properties'].copy()
++        update_props['user_data'] = 'changed1'
++        update_template = server.t.freeze(properties=update_props)
++        server.action = server.CREATE
++        scheduler.TaskRunner(server.update, update_template)()
++        self.assertEqual((server.UPDATE, server.COMPLETE), server.state)
++
++    # Test 2: pass new userdata to rebuild
++    # user_data_format='RAW'
++    # server booted with glance image (default)
++    def test_server_update_rebuild_raw_userdata(self):
++        # setup the starting stack
++        stack_name = 'update_rebuild_raw_userdata'
++        (tmpl, stack) = self._setup_test_stack(stack_name)
++        tmpl['Resources']['WebServer']['Properties'][
++            'user_data_format'] = 'RAW'
++        tmpl.t['Resources']['WebServer']['Properties'][
++            'user_data_update_policy'] = 'REBUILD'
++        tmpl.t['Resources']['WebServer']['Properties'][
++            'user_data'] = 'before'
++        resource_defns = tmpl.resource_definitions(stack)
++        server = servers.Server('server_' + stack_name,
++                                resource_defns['WebServer'], stack)
++        self._wrs_userdata_rebuild(tmpl, server, 'new userdata',
++                                   'new userdata')
++
++    # Test 3: pass new userdata to rebuild
++    # user_data_format='HEAT_CFNTOOLS'
++    # server booted with glance image (default)
++    def test_server_update_rebuild_cfn_userdata(self):
++        # setup the starting stack
++        stack_name = 'update_rebuild_cfn_userdata'
++        (tmpl, stack) = self._setup_test_stack(stack_name)
++        tmpl.t['Resources']['WebServer']['Properties'][
++            'user_data_format'] = 'HEAT_CFNTOOLS'
++        tmpl.t['Resources']['WebServer']['Properties'][
++            'user_data_update_policy'] = 'REBUILD'
++        tmpl.t['Resources']['WebServer']['Properties'][
++            'user_data'] = 'before'
++        resource_defns = tmpl.resource_definitions(stack)
++        server = servers.Server('server_' + stack_name,
++                                resource_defns['WebServer'], stack)
++        # The HEAT_CFNTOOLS converts the userdata into a large MIME structure
++        self._wrs_userdata_rebuild(tmpl, server, 'new userdata',
++                                   'MIME data junk')
++    # end
++
+     @mock.patch.object(servers.Server, 'prepare_for_replace')
+     def test_server_update_image_replace(self, mock_replace):
+         stack_name = 'update_imgrep'
+@@ -2267,12 +2368,12 @@ class ServersTest(common.HeatTestCase):
+             mock_rebuild.assert_called_once_with(
+                 return_server, '2', password=password,
+                 preserve_ephemeral=False,
+-                meta={}, files={})
++                meta={}, files={}, userdata=None)
+         else:
+             mock_rebuild.assert_called_once_with(
+                 return_server, '2', password=password,
+                 preserve_ephemeral=True,
+-                meta={}, files={})
++                meta={}, files={}, userdata=None)
+ 
+     def test_server_update_image_rebuild_status_rebuild(self):
+         # Normally we will see 'REBUILD' first and then 'ACTIVE".
+@@ -2334,7 +2435,7 @@ class ServersTest(common.HeatTestCase):
+         self.assertEqual((server.UPDATE, server.FAILED), server.state)
+         mock_rebuild.assert_called_once_with(
+             return_server, '2', password=None, preserve_ephemeral=False,
+-            meta={}, files={})
++            meta={}, files={}, userdata=None)
+ 
+     def test_server_update_properties(self):
+         return_server = self.fc.servers.list()[1]
+-- 
+2.7.4
+

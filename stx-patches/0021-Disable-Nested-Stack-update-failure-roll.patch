@@ -1,0 +1,88 @@
+From f62fae5ddb1b21db3286675a429b0511d9f813da Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 17:08:33 -0500
+Subject: [PATCH 21/57] Disable Nested Stack update failure rollbacks
+
+Add extra logging when a rollback happens.
+Minor logging improvements also.
+---
+ heat/common/config.py                   | 4 ++++
+ heat/engine/resources/stack_resource.py | 4 +++-
+ heat/engine/stack.py                    | 4 ++++
+ heat/tests/test_stack_resource.py       | 4 ++--
+ 4 files changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/heat/common/config.py b/heat/common/config.py
+index 3ad7b88..59f4c5e 100644
+--- a/heat/common/config.py
++++ b/heat/common/config.py
+@@ -104,6 +104,10 @@ service_opts = [
+                       'the host, whichever is greater.'))]
+ 
+ engine_opts = [
++    cfg.BoolOpt('disable_rollback_nested_stack_updates',
++                default=False,
++                help=_('disable_rollback value when performing update'
++                       ' for nested stacks.')),
+     cfg.ListOpt('plugin_dirs',
+                 default=['/usr/lib64/heat', '/usr/lib/heat',
+                          '/usr/local/lib/heat', '/usr/local/lib64/heat'],
+diff --git a/heat/engine/resources/stack_resource.py b/heat/engine/resources/stack_resource.py
+index 0970741..d16a48d 100644
+--- a/heat/engine/resources/stack_resource.py
++++ b/heat/engine/resources/stack_resource.py
+@@ -224,11 +224,13 @@ class StackResource(resource.Resource):
+ 
+         # Note we disable rollback for nested stacks, since they
+         # should be rolled back by the parent stack on failure
++        # nested_rollback is configurable
++        nested_rollback = cfg.CONF.disable_rollback_nested_stack_updates
+         nested = parser.Stack(self.context,
+                               stack_name,
+                               parsed_template,
+                               timeout_mins=timeout_mins,
+-                              disable_rollback=True,
++                              disable_rollback=nested_rollback,
+                               parent_resource=self.name,
+                               owner_id=self.stack.id,
+                               user_creds_id=self.stack.user_creds_id,
+diff --git a/heat/engine/stack.py b/heat/engine/stack.py
+index bd7220f..b892d20 100644
+--- a/heat/engine/stack.py
++++ b/heat/engine/stack.py
+@@ -951,6 +951,10 @@ class Stack(collections.Mapping):
+         self.status_reason = reason
+         self._log_status()
+ 
++        # Add an extra exception log when we encounter FAILED
++        if self.status == self.FAILED:
++            LOG.exception('Setting status to FAILED. reason: %s'
++                          % self.status_reason)
+         if self.convergence and action in (
+                 self.UPDATE, self.DELETE, self.CREATE,
+                 self.ADOPT, self.ROLLBACK, self.RESTORE):
+diff --git a/heat/tests/test_stack_resource.py b/heat/tests/test_stack_resource.py
+index 64ece0c..b52adc2 100644
+--- a/heat/tests/test_stack_resource.py
++++ b/heat/tests/test_stack_resource.py
+@@ -268,7 +268,7 @@ class StackResourceTest(StackResourceBaseTest):
+             'test_stack-test',
+             mock.ANY,
+             timeout_mins=None,
+-            disable_rollback=True,
++            disable_rollback=False,
+             parent_resource=parent_resource.name,
+             owner_id=self.parent_stack.id,
+             user_creds_id=self.parent_stack.user_creds_id,
+@@ -310,7 +310,7 @@ class StackResourceTest(StackResourceBaseTest):
+             'test_stack-test',
+             mock.ANY,
+             timeout_mins=None,
+-            disable_rollback=True,
++            disable_rollback=False,
+             parent_resource=parent_resource.name,
+             owner_id=self.parent_stack.id,
+             user_creds_id=self.parent_stack.user_creds_id,
+-- 
+2.7.4
+

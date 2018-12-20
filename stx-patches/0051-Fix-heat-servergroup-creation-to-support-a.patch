@@ -1,0 +1,51 @@
+From 49ce811814ed20b5f9cedbdf6f8955b512e290b3 Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Tue, 13 Feb 2018 15:31:44 -0600
+Subject: [PATCH 51/57] Fix heat servergroup creation to support a new parameter in novaclient
+
+Needed to add project_id in the code for heat resource creation of a servergroup
+---
+ heat/engine/resources/openstack/nova/server_group.py | 2 ++
+ heat/tests/openstack/nova/test_server_group.py       | 4 +++-
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/heat/engine/resources/openstack/nova/server_group.py b/heat/engine/resources/openstack/nova/server_group.py
+index 663911b..d1a42e4 100644
+--- a/heat/engine/resources/openstack/nova/server_group.py
++++ b/heat/engine/resources/openstack/nova/server_group.py
+@@ -103,7 +103,9 @@ class ServerGroup(resource.Resource):
+         if best_effort is not None:
+             metadata[BEST_EFFORT_METAKEY] = str(best_effort).lower()
+ 
++        project_id = self.context.tenant_id
+         kwargs = {self.NAME: name,
++                  'project_id': project_id,
+                   self.POLICIES: policies,
+                   'metadata': metadata}
+         try:
+diff --git a/heat/tests/openstack/nova/test_server_group.py b/heat/tests/openstack/nova/test_server_group.py
+index a3e9c7d..53a4996 100644
+--- a/heat/tests/openstack/nova/test_server_group.py
++++ b/heat/tests/openstack/nova/test_server_group.py
+@@ -74,7 +74,7 @@ class NovaServerGroupTest(common.HeatTestCase):
+             name = 'test'
+             n = name
+ 
+-            def fake_create(name, policies, metadata):
++            def fake_create(name, project_id, policies, metadata):
+                 self.assertGreater(len(name), 1)
+                 return FakeGroup(n)
+             self.sg_mgr.create = fake_create
+@@ -86,7 +86,9 @@ class NovaServerGroupTest(common.HeatTestCase):
+     def test_sg_create(self):
+         self._create_sg('test')
+         expected_args = ()
++        # dummy_context has a tenant_id named: test_tenant_id
+         expected_kwargs = {'name': 'test',
++                           'project_id': 'test_tenant_id',
+                            'policies': ["anti-affinity"],
+                            'metadata': {'wrs-sg:best_effort': 'true',
+                                         'wrs-sg:group_size': '2'}
+-- 
+2.7.4
+

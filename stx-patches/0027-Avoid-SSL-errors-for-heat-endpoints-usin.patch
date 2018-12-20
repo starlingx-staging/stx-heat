@@ -1,0 +1,44 @@
+From 8be0ca2ee424250c1566ccf8d1b73a7c337673c6 Mon Sep 17 00:00:00 2001
+From: Lachlan Plant <lachlan.plant@windriver.com>
+Date: Wed, 25 Oct 2017 10:55:12 -0500
+Subject: [PATCH 27/57] Avoid SSL errors for heat endpoints using publicURL
+
+Heat ssl error from publicURL
+---
+ heat/engine/clients/os/heat_plugin.py | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/heat/engine/clients/os/heat_plugin.py b/heat/engine/clients/os/heat_plugin.py
+index 3cb408d..64ef288 100644
+--- a/heat/engine/clients/os/heat_plugin.py
++++ b/heat/engine/clients/os/heat_plugin.py
+@@ -31,7 +31,7 @@ class HeatClientPlugin(client_plugin.ClientPlugin):
+                      CLOUDFORMATION] = ['orchestration', 'cloudformation']
+ 
+     def _create(self):
+-        endpoint = self.get_heat_url()
++        endpoint = self.get_heat_url(True)
+         args = {}
+         if self._get_client_option(CLIENT_NAME, 'url'):
+             # assume that the heat API URL is manually configured because
+@@ -53,7 +53,7 @@ class HeatClientPlugin(client_plugin.ClientPlugin):
+     def is_conflict(self, ex):
+         return isinstance(ex, exc.HTTPConflict)
+ 
+-    def get_heat_url(self):
++    def get_heat_url(self, client_launch=False):
+         heat_url = self._get_client_option(CLIENT_NAME, 'url')
+         if heat_url:
+             tenant_id = self.context.tenant_id
+@@ -61,6 +61,8 @@ class HeatClientPlugin(client_plugin.ClientPlugin):
+         else:
+             endpoint_type = self._get_client_option(CLIENT_NAME,
+                                                     'endpoint_type')
++            if client_launch:
++                endpoint_type = 'internalURL'
+             heat_url = self.url_for(service_type=self.ORCHESTRATION,
+                                     endpoint_type=endpoint_type)
+         return heat_url
+-- 
+2.7.4
+

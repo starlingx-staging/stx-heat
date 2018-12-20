@@ -1,0 +1,146 @@
+From 9a0673aa93e87e8bcbed83ff99a7a7f91972df33 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 13:26:32 -0500
+Subject: [PATCH 04/57] Issue a STOP prior to DELETE for nova servers
+
+TOX.  Speed up server delete tox test case
+
+The delete when not found test would stall for 60 seconds trying to stop the server.
+Now, we simply mock out that call which makes that test run 60 seconds faster
+
+Cleanly shutdown a VM before deleting it and its implied ports to prevent huge page leaks
+
+It appears that tearing down internal ports and then issuing a stop and delete close to one another, will cause huge pages to leak.
+The fix was to issue the stop prior to deleting the internal ports, and wait up to 60 seconds until the stop succeeds  before proceeding with the deletion of the internal ports and the VM.
+
+Note: the internal ports are only created when a VM is launched by "subnet"
+---
+ heat/engine/clients/os/nova.py                 | 39 ++++++++++++++++++++++++++
+ heat/engine/resources/aws/ec2/instance.py      |  5 ++++
+ heat/engine/resources/openstack/nova/server.py |  4 +++
+ heat/tests/openstack/nova/test_server.py       |  9 ++++++
+ 4 files changed, 57 insertions(+)
+
+diff --git a/heat/engine/clients/os/nova.py b/heat/engine/clients/os/nova.py
+index 99da942..42b06fc 100644
+--- a/heat/engine/clients/os/nova.py
++++ b/heat/engine/clients/os/nova.py
+@@ -15,6 +15,7 @@ import collections
+ import email
+ from email.mime import multipart
+ from email.mime import text
++import eventlet
+ import os
+ import pkgutil
+ import string
+@@ -429,6 +430,44 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
+ 
+         return mime_blob.as_string()
+ 
++    def stop_server(self, server_id):
++        """Wait for server to STOP from Nova."""
++        try:
++            server = self.fetch_server(server_id)
++        except Exception as exc:
++            self.ignore_not_found(exc)
++            return True
++        if not server:
++            return False
++        status = self.get_status(server)
++        if status not in ("ERROR", ):
++            # if the server is not in error state, issue STOP
++            try:
++                LOG.info('stopping server %s' % server_id)
++                server.stop()
++                loop_count = 60
++                while loop_count > 0:
++                    loop_count -= 1
++                    try:
++                        self.refresh_server(server)
++                    except Exception as exc:
++                        self.ignore_not_found(exc)
++                        break
++                    else:
++                        short_server_status = server.status.split('(')[0]
++                        LOG.debug('looping server %s' % short_server_status)
++                        if short_server_status == "SHUTOFF":
++                            break
++                        # sleep for 1 second
++                        eventlet.sleep(1)
++            except Exception as ex:
++                # Log the error for the STOP but proceed with the delete
++                LOG.error('Could not safely stop %s before deleting. Exc: %s' %
++                          (server_id, str(ex)))
++                return False
++        LOG.info('done stopping server %s' % server_id)
++        return True
++
+     def check_delete_server_complete(self, server_id):
+         """Wait for server to disappear from Nova."""
+         try:
+diff --git a/heat/engine/resources/aws/ec2/instance.py b/heat/engine/resources/aws/ec2/instance.py
+index e35a5b3..66d255e 100644
+--- a/heat/engine/resources/aws/ec2/instance.py
++++ b/heat/engine/resources/aws/ec2/instance.py
+@@ -812,11 +812,16 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
+                          'net_interfaces': self.NETWORK_INTERFACES})
+ 
+     def handle_delete(self):
++        # Issue STOP before issuing DELETE
++        if self.resource_id is not None:
++            self.client_plugin().stop_server(self.resource_id)
++
+         # make sure to delete the port which implicit-created by heat
+         self._port_data_delete()
+ 
+         if self.resource_id is None:
+             return
++
+         try:
+             self.client().servers.delete(self.resource_id)
+         except Exception as e:
+diff --git a/heat/engine/resources/openstack/nova/server.py b/heat/engine/resources/openstack/nova/server.py
+index 9d72d11..18f2160 100644
+--- a/heat/engine/resources/openstack/nova/server.py
++++ b/heat/engine/resources/openstack/nova/server.py
+@@ -1577,6 +1577,10 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+                                     limits['maxPersonalitySize'], msg)
+ 
+     def _delete(self):
++        # Issue STOP before issuing DELETE
++        if self.resource_id is not None:
++            self.client_plugin().stop_server(self.resource_id)
++
+         if self.user_data_software_config():
+             self._delete_queue()
+             self._delete_user()
+diff --git a/heat/tests/openstack/nova/test_server.py b/heat/tests/openstack/nova/test_server.py
+index 3af2c9d..4db9d48 100644
+--- a/heat/tests/openstack/nova/test_server.py
++++ b/heat/tests/openstack/nova/test_server.py
+@@ -1561,6 +1561,11 @@ class ServersTest(common.HeatTestCase):
+         # this makes sure the auto increment worked on server creation
+         self.assertGreater(server.id, 0)
+ 
++        # Patch stop_server call to return immediately. otherwise
++        # this test will take 60 seconds for the stop to timeout
++        self.patchobject(nova.NovaClientPlugin, 'stop_server',
++                         return_value=True)
++
+         self.patchobject(self.fc.client, 'delete_servers_1234',
+                          side_effect=fakes_nova.fake_exception())
+         scheduler.TaskRunner(server.delete)()
+@@ -4253,6 +4258,10 @@ class ServersTest(common.HeatTestCase):
+         rsrc = stack['WebServer']
+         mock_plugin = self.patchobject(nova.NovaClientPlugin, '_create')
+         mock_plugin.return_value = self.fc
++
++        self.patchobject(nova.NovaClientPlugin, 'stop_server',
++                         return_value=True)
++
+         delete_server = self.patchobject(self.fc.servers, 'delete')
+         delete_server.side_effect = nova_exceptions.NotFound(404)
+         create_image = self.patchobject(self.fc.servers, 'create_image')
+-- 
+2.7.4
+

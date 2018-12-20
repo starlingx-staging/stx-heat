@@ -1,0 +1,28 @@
+From 5543c86d71f22756650834c5bc420e5fcda58709 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:47:33 -0500
+Subject: [PATCH 10/57] Add vcpu_util as nova meter for alarm prefixing
+
+Ceilometer meters are automatically prefixed differently for nova meters for
+auto scaling and interaction with heat alarms.
+This code change characterizes  vcpu meters the same as other nova meters (like cpu)
+---
+ heat/engine/resources/alarm_base.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/heat/engine/resources/alarm_base.py b/heat/engine/resources/alarm_base.py
+index edc9f94..98b317a 100644
+--- a/heat/engine/resources/alarm_base.py
++++ b/heat/engine/resources/alarm_base.py
+@@ -178,7 +178,7 @@ common_properties_schema = {
+ 
+ 
+ NOVA_METERS = ['instance', 'memory', 'memory.usage', 'memory.resident',
+-               'cpu', 'cpu_util', 'vcpus',
++               'cpu', 'cpu_util', 'vcpus', 'vcpu_util',
+                'disk.read.requests', 'disk.read.requests.rate',
+                'disk.write.requests', 'disk.write.requests.rate',
+                'disk.read.bytes', 'disk.read.bytes.rate',
+-- 
+2.7.4
+

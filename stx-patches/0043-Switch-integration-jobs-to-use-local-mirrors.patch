@@ -1,0 +1,72 @@
+From 8621163e2bed1de3ca44f372c6a98d14bd5aa04e Mon Sep 17 00:00:00 2001
+From: Mohammed Naser <mnaser@vexxhost.com>
+Date: Thu, 10 Aug 2017 13:51:13 -0400
+Subject: [PATCH 43/57] Switch integration jobs to use local mirrors
+
+The integration jobs currently download images from a third party
+mirror which can be slow at times or use up a lot of bandwidth.
+
+This patch tries to automatically detect if nodepool mirrors are
+active and uses them, falling back to the global round-robin mirror
+of the Fedora project instead of a specific mirror.
+
+Note: Though there is no bug associated with this change, we need to
+backport this to avoid future issues (most of the mirrors don't host
+Fedora 24 images any more)
+
+Change-Id: Ie111c20b6dd0efe2e1cbfcac2a46b27ce6bc20c0
+(cherry picked from commit a47e342f4d0cad4ff314a3f546b6661c8ec67777)
+---
+ heat_integrationtests/cleanup_test_env.sh |  2 +-
+ heat_integrationtests/pre_test_hook.sh    | 11 +++++++++--
+ heat_integrationtests/prepare_test_env.sh |  2 +-
+ 3 files changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/heat_integrationtests/cleanup_test_env.sh b/heat_integrationtests/cleanup_test_env.sh
+index 54dabc4..a62e003 100755
+--- a/heat_integrationtests/cleanup_test_env.sh
++++ b/heat_integrationtests/cleanup_test_env.sh
+@@ -30,4 +30,4 @@ openstack flavor delete m1.heat_int
+ openstack flavor delete m1.heat_micro
+ 
+ # delete the image created
+-openstack image delete Fedora-Cloud-Base-24-1.2.x86_64
++openstack image delete Fedora-Cloud-Base-26-1.5.x86_64
+diff --git a/heat_integrationtests/pre_test_hook.sh b/heat_integrationtests/pre_test_hook.sh
+index c15d78e..3621044 100755
+--- a/heat_integrationtests/pre_test_hook.sh
++++ b/heat_integrationtests/pre_test_hook.sh
+@@ -44,8 +44,15 @@ echo -e '[[post-config|$NOVA_CONF]]\n[DEFAULT]\n' >> $localconf
+ echo -e 'quota_driver=nova.quota.NoopQuotaDriver\n' >> $localconf
+ 
+ echo "[[local|localrc]]" >> $localconf
+-# Create the images required for testing
+-echo "IMAGE_URLS+=http://fedora.bhs.mirrors.ovh.net/linux/releases/24/CloudImages/x86_64/images/Fedora-Cloud-Base-24-1.2.x86_64.qcow2" >> $localconf
++
++# NOTE(mnaser): This will use the region local mirrors to avoid going out
++#               to network
++if [[ -e /etc/ci/mirror_info.sh ]]; then
++	source /etc/ci/mirror_info.sh
++	echo "IMAGE_URLS+=${NODEPOOL_FEDORA_MIRROR}/releases/26/CloudImages/x86_64/images/Fedora-Cloud-Base-26-1.5.x86_64.qcow2" >> $localconf
++else
++	echo "IMAGE_URLS+=https://download.fedoraproject.org/pub/fedora/linux/releases/26/CloudImages/x86_64/images/Fedora-Cloud-Base-26-1.5.x86_64.qcow2" >> $localconf
++fi
+ 
+ echo "CEILOMETER_BACKEND=mysql" >> $localconf
+ echo "CEILOMETER_PIPELINE_INTERVAL=60" >> $localconf
+diff --git a/heat_integrationtests/prepare_test_env.sh b/heat_integrationtests/prepare_test_env.sh
+index c266cf4..b8c9a78 100755
+--- a/heat_integrationtests/prepare_test_env.sh
++++ b/heat_integrationtests/prepare_test_env.sh
+@@ -51,7 +51,7 @@ iniset $conf_file heat_plugin minimal_instance_type m1.heat_micro
+ openstack flavor create m1.heat_int --ram 512
+ openstack flavor create m1.heat_micro --ram 128
+ 
+-iniset $conf_file heat_plugin image_ref Fedora-Cloud-Base-24-1.2.x86_64
++iniset $conf_file heat_plugin image_ref Fedora-Cloud-Base-26-1.5.x86_64
+ iniset $conf_file heat_plugin boot_config_env $DEST/heat-templates/hot/software-config/boot-config/test_image_env.yaml
+ iniset $conf_file heat_plugin heat_config_notify_script $DEST/heat-templates/hot/software-config/elements/heat-config/bin/heat-config-notify
+ iniset $conf_file heat_plugin minimal_image_ref cirros-0.3.5-x86_64-disk
+-- 
+2.7.4
+

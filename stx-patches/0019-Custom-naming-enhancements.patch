@@ -1,0 +1,231 @@
+From 56d13ca3e270407286c817f2e0f10d91deb53da3 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 16:54:34 -0500
+Subject: [PATCH 19/57] Custom naming enhancements
+
+Fixes and enhancements for Autoscale naming
+
+1) Adding in a new HOT function called group_index to return the numerical index of an object within a group.
+At present this example only works when the nested object is a nested stack.
+Applicable to InstanceGroup and subclasses using delete_oldest flag
+Refer to example yaml files to illustrate the naming improvements
+
+2) Provide a mechanism for naming servers based on scaling group index
+
+In order to use this capability,  a metadata field needs to be added at the resource level
+for the server object being scaled.  This is not the same as metadata at the property level.
+
+example when declaring the resource property within an AutoScalingGroup
+
+type: OS::Nova::Server
+metadata:
+    wrs-groupindex-mode: true
+
+The way this works is that it will store a wrs-groupindex number for each object being scaled.
+At present, only OS::Nova::Server examines this attribute,
+ and will only append it if the wrs-groupindex-mode metadata flag is set
+
+The CFNPushStatsAutoScaling.yaml and CombinationAutoScaling.yaml templates use this enhancement
+---
+ heat/engine/hot/functions.py                   | 38 ++++++++++++++++++++++++++
+ heat/engine/hot/template.py                    |  2 ++
+ heat/engine/resources/openstack/nova/server.py | 10 +++++++
+ heat/engine/resources/wr/enhancements.py       | 30 ++++++++++++++++++++
+ heat/engine/rsrc_defn.py                       | 13 +++++++++
+ heat/scaling/template.py                       |  7 ++++-
+ 6 files changed, 99 insertions(+), 1 deletion(-)
+ create mode 100644 heat/engine/resources/wr/enhancements.py
+
+diff --git a/heat/engine/hot/functions.py b/heat/engine/hot/functions.py
+index b96c87d..e2a1681 100644
+--- a/heat/engine/hot/functions.py
++++ b/heat/engine/hot/functions.py
+@@ -24,6 +24,7 @@ import yaql
+ from yaql.language import exceptions
+ 
+ from heat.common import exception
++from heat.common import grouputils
+ from heat.common.i18n import _
+ from heat.engine import attributes
+ from heat.engine import function
+@@ -43,6 +44,8 @@ opts = [
+ ]
+ cfg.CONF.register_opts(opts, group='yaql')
+ 
++LOG = logging.getLogger(__name__)
++
+ 
+ class GetParam(function.Function):
+     """A function for resolving parameter references.
+@@ -1641,3 +1644,38 @@ class Contains(function.Function):
+                               'a sequence.') % self.fn_name)
+ 
+         return resolved_value in resolved_sequence
++
++
++class GroupIndex(function.Function):
++    """A function for resolving this items group index
++
++    Returns -1 if this item is not indexed in a autoscalinggroup, etc..
++    Returns the index (0, 1, etc..) if it is part of a group
++    Only works for nested stacks at the moment
++    Takes the form::
++        group_index
++    """
++
++    def __init__(self, stack, fn_name, args):
++        super(GroupIndex, self).__init__(stack, fn_name, args)
++
++    # returns a number
++    def find_group_index(self, stk, target):
++        p_stk = stk.parent_resource
++        if p_stk is None:
++            return -1
++        # grouputils.get_members only works on nested
++        if hasattr(p_stk, 'nested'):
++            members = grouputils.get_members(p_stk)
++            count = 0
++            for memb in members:
++                if memb.FnGetRefId() == target:
++                    return count
++                count += 1
++        # Recurse to parent stack, using parent stack refid as the target
++        return self.find_group_index(p_stk.stack, p_stk.FnGetRefId())
++
++    def result(self):
++        # Using None as the target,
++        r = self.find_group_index(self.stack, None)
++        return str(r)
+diff --git a/heat/engine/hot/template.py b/heat/engine/hot/template.py
+index 0790128..6defeea 100644
+--- a/heat/engine/hot/template.py
++++ b/heat/engine/hot/template.py
+@@ -321,6 +321,8 @@ class HOTemplate20150430(HOTemplate20141016):
+         # functions added in 2015-04-30
+         'digest': hot_funcs.Digest,
+ 
++        # WRS extension
++        'group_index': hot_funcs.GroupIndex,
+         # functions removed from 2014-10-16
+         'Fn::GetAZs': hot_funcs.Removed,
+         'Fn::Join': hot_funcs.Removed,
+diff --git a/heat/engine/resources/openstack/nova/server.py b/heat/engine/resources/openstack/nova/server.py
+index 3a402d5..bad7678 100644
+--- a/heat/engine/resources/openstack/nova/server.py
++++ b/heat/engine/resources/openstack/nova/server.py
+@@ -29,10 +29,12 @@ from heat.engine.resources.openstack.neutron import subnet
+ from heat.engine.resources.openstack.nova import server_network_mixin
+ from heat.engine.resources import scheduler_hints as sh
+ from heat.engine.resources import server_base
++from heat.engine.resources.wr import enhancements as wrs
+ from heat.engine import support
+ from heat.engine import translation
+ from heat.rpc import api as rpc_api
+ 
++
+ cfg.CONF.import_opt('default_software_config_transport', 'heat.common.config')
+ cfg.CONF.import_opt('default_user_data_format', 'heat.common.config')
+ 
+@@ -40,6 +42,7 @@ LOG = logging.getLogger(__name__)
+ 
+ 
+ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
++             wrs.NameEnhanceMixin,
+              server_network_mixin.ServerNetworkMixin):
+     """A resource for managing Nova instances.
+ 
+@@ -781,6 +784,13 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+             self._register_access_key()
+         self.default_collectors = ['ec2']
+ 
++    def _server_name(self):
++        name = self.properties[self.NAME]
++        if name:
++            return self._enhance_name(name)
++
++        return self.physical_resource_name()
++
+     def wrs_vote(self):
+         if self.resource_id is None:
+             return True
+diff --git a/heat/engine/resources/wr/enhancements.py b/heat/engine/resources/wr/enhancements.py
+new file mode 100644
+index 0000000..e1ea9b4
+--- /dev/null
++++ b/heat/engine/resources/wr/enhancements.py
+@@ -0,0 +1,30 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++
++class NameEnhanceMixin(object):
++    """Utility class to encapsulate WRS naming enhancements"""
++
++    WRS_GROUP_INDEX_ENABLED = 'wrs-groupindex-mode'
++    WRS_GROUP_INDEX = 'wrs-groupindex'
++
++    def _enhance_name(self, name):
++        metadata = self.metadata_get()
++        # If wrs-groupindex-mode set in metadata
++        # then  wrs-groupindex value appended to name
++        # example:  Foo  ->  Foo1
++        if metadata.get(self.WRS_GROUP_INDEX_ENABLED):
++            gi = metadata.get(self.WRS_GROUP_INDEX, None)
++            if gi is not None:
++                return name + str(gi)
++        return name
+diff --git a/heat/engine/rsrc_defn.py b/heat/engine/rsrc_defn.py
+index 5ae3d7f..8ff10bf 100644
+--- a/heat/engine/rsrc_defn.py
++++ b/heat/engine/rsrc_defn.py
+@@ -305,6 +305,19 @@ class ResourceDefinition(object):
+         props.update_translation(self._rules, self._client_resolve)
+         return props
+ 
++    def set_group_index(self, i):
++        if self._metadata is None:
++            self._metadata = {}
++        self._metadata['wrs-groupindex'] = str(i)
++        # need to clear the rendering field otherwise the old
++        # metadata used by render_hot gets re-used
++        self._rendering = None
++
++    def get_group_index(self):
++        if self._metadata is None:
++            return "-1"
++        return self._metadata.get('wrs-groupindex', "-1")
++
+     def metadata(self):
+         """Return the resource metadata."""
+         return function.resolve(self._metadata) or {}
+diff --git a/heat/scaling/template.py b/heat/scaling/template.py
+index 60b0953..b5867aa 100644
+--- a/heat/scaling/template.py
++++ b/heat/scaling/template.py
+@@ -57,7 +57,12 @@ def member_definitions(old_resources, new_definition,
+                 yield old_name, old_definition
+         else:
+             new_name = get_new_id()
+-            yield new_name, customise(new_name, new_definition)
++            custom_definition = customise(new_name, new_definition)
++            # specify the group index in metadata for the resource
++            if not delete_oldest:
++                if hasattr(custom_definition, "set_group_index"):
++                    custom_definition.set_group_index(i)
++            yield new_name, custom_definition
+ 
+ 
+ def make_template(resource_definitions,
+-- 
+2.7.4
+

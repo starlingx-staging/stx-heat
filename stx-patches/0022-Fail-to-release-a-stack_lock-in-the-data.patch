@@ -1,0 +1,45 @@
+From f7e33b042a2db0f02ef4191ab192522c9ec645fa Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 17:09:04 -0500
+Subject: [PATCH 22/57] Fail to release a stack_lock in the database is a fatal action
+
+Treat the failure to release a stack_lock in the database as a fatal action
+
+When a heat-engine thread activity completes, it calls release on its stack_lock object in the database.
+If that release action fails due to an inability to update the database, that engine process is no longer usable.
+This code catches that failure, logs it, and terminates that engine process so that a new one can be started.
+New heat engines will automatically purge stale stack_locks from the database
+
+This bug is very timing specific. The DB error needs to exist when the stack_lock release fails
+---
+ heat/engine/service.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/heat/engine/service.py b/heat/engine/service.py
+index 951671b..27f3f0f 100644
+--- a/heat/engine/service.py
++++ b/heat/engine/service.py
+@@ -18,6 +18,7 @@ import itertools
+ import os
+ import pydoc
+ import socket
++import sys
+ 
+ import eventlet
+ from oslo_config import cfg
+@@ -190,7 +191,11 @@ class ThreadGroupManager(object):
+                                          stack.UPDATE)):
+                 stack.persist_state_and_release_lock(lock.engine_id)
+             else:
+-                lock.release()
++                try:
++                    lock.release()
++                except Exception:
++                    LOG.exception("FATAL. Failed stack_lock release. Exiting")
++                    sys.exit(-1)
+ 
+         # Link to self to allow the stack to run tasks
+         stack.thread_group_mgr = self
+-- 
+2.7.4
+

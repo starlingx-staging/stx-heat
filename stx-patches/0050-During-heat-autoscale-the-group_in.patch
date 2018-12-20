@@ -1,0 +1,28 @@
+From dafeffd69cf0203ea2ae1aee82f8bf91a6cfed4c Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Fri, 12 Jan 2018 13:39:45 -0600
+Subject: [PATCH 50/57] During heat autoscale the group_index shows -1 for existing VM
+
+The RefID is different during scale up, than during initial launch where it is still a template declaration.
+The code change was to do a match based on either value.
+---
+ heat/engine/hot/functions.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/heat/engine/hot/functions.py b/heat/engine/hot/functions.py
+index 73ac65b..7b82325 100644
+--- a/heat/engine/hot/functions.py
++++ b/heat/engine/hot/functions.py
+@@ -1671,7 +1671,8 @@ class GroupIndex(function.Function):
+                     members = grouputils.get_members(res)
+                     count = 0
+                     for memb in members:
+-                        if memb.FnGetRefId() == target:
++                        # On initial launch, use refid.  Later we use name
++                        if memb.FnGetRefId() == target or memb.name == target:
+                             return count
+                         count += 1
+         # Recurse to parent stack, using parent stack refid as the target
+-- 
+2.7.4
+

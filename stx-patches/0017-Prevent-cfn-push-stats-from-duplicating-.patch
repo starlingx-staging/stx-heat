@@ -1,0 +1,91 @@
+From 6cb622e929d228667b61fb5e4fe3a73342b37eef Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 15:56:13 -0500
+Subject: [PATCH 17/57] Prevent cfn-push-stats from duplicating samples
+
+This convention indicates that if a watch name is not specified, simply
+store the ceilometer sample in the DB, rather than raise errors or
+duplicate samples.
+---
+ heat/engine/service.py   |  7 +++++++
+ heat/engine/watchrule.py | 39 +++++++++++++++++++++------------------
+ 2 files changed, 28 insertions(+), 18 deletions(-)
+
+diff --git a/heat/engine/service.py b/heat/engine/service.py
+index 3032195..951671b 100644
+--- a/heat/engine/service.py
++++ b/heat/engine/service.py
+@@ -2172,6 +2172,13 @@ class EngineService(service.ServiceBase):
+         This could be used by CloudWatch and WaitConditions
+         and treat HA service events like any other CloudWatch.
+         """
++        # If cfn-push-stats is sending samples without specifying
++        # a watch_name it means we simply wish to store the ceilometer
++        # sample in the database
++        if watch_name is None:
++            watchrule.create_cfn_samples(cnxt.clients, stats_data)
++            return stats_data
++
+         def get_matching_watches():
+             if watch_name:
+                 yield watchrule.WatchRule.load(cnxt, watch_name)
+diff --git a/heat/engine/watchrule.py b/heat/engine/watchrule.py
+index 8f80006..8453882 100644
+--- a/heat/engine/watchrule.py
++++ b/heat/engine/watchrule.py
+@@ -29,6 +29,26 @@ from heat.rpc import api as rpc_api
+ LOG = logging.getLogger(__name__)
+ 
+ 
++def create_cfn_samples(clients, data):
++    sample = {}
++    sample['counter_type'] = 'gauge'
++
++    for k, d in iter(data.items()):
++        if k == 'Namespace':
++            continue
++        sample['counter_name'] = k
++        sample['counter_volume'] = d['Value']
++        sample['counter_unit'] = d['Unit']
++        dims = d.get('Dimensions', {})
++        if isinstance(dims, list):
++            dims = dims[0]
++        sample['resource_metadata'] = dims
++        sample['resource_id'] = dims.get('InstanceId')
++        LOG.debug('new sample:%(k)s data:%(sample)s' % {
++                  'k': k, 'sample': sample})
++        clients.client('ceilometer').samples.create(**sample)
++
++
+ class WatchRule(object):
+     WATCH_STATES = (
+         ALARM,
+@@ -274,24 +294,7 @@ class WatchRule(object):
+         return actions
+ 
+     def _to_ceilometer(self, data):
+-        clients = self.context.clients
+-        sample = {}
+-        sample['counter_type'] = 'gauge'
+-
+-        for k, d in iter(data.items()):
+-            if k == 'Namespace':
+-                continue
+-            sample['counter_name'] = k
+-            sample['counter_volume'] = d['Value']
+-            sample['counter_unit'] = d['Unit']
+-            dims = d.get('Dimensions', {})
+-            if isinstance(dims, list):
+-                dims = dims[0]
+-            sample['resource_metadata'] = dims
+-            sample['resource_id'] = dims.get('InstanceId')
+-            LOG.debug('new sample:%(k)s data:%(sample)s', {
+-                      'k': k, 'sample': sample})
+-            clients.client('ceilometer').samples.create(**sample)
++        create_cfn_samples(self.context.clients, data)
+ 
+     def create_watch_data(self, data):
+         if self.state == self.CEILOMETER_CONTROLLED:
+-- 
+2.7.4
+

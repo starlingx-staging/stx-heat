@@ -1,0 +1,506 @@
+From 9cdec6c5f9b508610d6227c8c6b7dbac4f54c15f Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:50:37 -0500
+Subject: [PATCH 12/57] WR::Neutron::PortForwarding
+
+Neutron Virtual Router Port Forwarding Rules
+
+The neutron API has been extended with support for virtual router port
+forwarding (i.e., DNAT).  This commit adds the required engine resources to be
+able to create forwarding rules from a heat stack.
+---
+ .../engine/resources/wr/neutron_port_forwarding.py | 195 +++++++++++++++
+ heat/tests/test_resource.py                        |   3 +-
+ heat/tests/wr/test_neutron_port_forwarding.py      | 264 +++++++++++++++++++++
+ 3 files changed, 461 insertions(+), 1 deletion(-)
+ create mode 100644 heat/engine/resources/wr/neutron_port_forwarding.py
+ create mode 100644 heat/tests/wr/test_neutron_port_forwarding.py
+
+diff --git a/heat/engine/resources/wr/neutron_port_forwarding.py b/heat/engine/resources/wr/neutron_port_forwarding.py
+new file mode 100644
+index 0000000..f967bbb
+--- /dev/null
++++ b/heat/engine/resources/wr/neutron_port_forwarding.py
+@@ -0,0 +1,195 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++#
++# Copyright (c) 2015 Wind River Systems, Inc.
++#
++#
++#
++#
++#
++
++
++from heat.common.i18n import _
++from heat.engine import attributes
++from heat.engine import constraints
++from heat.engine import properties
++from heat.engine.resources.openstack.neutron import neutron
++
++from oslo_log import log as logging
++
++import neutronclient.common.exceptions as neutron_exp
++
++LOG = logging.getLogger(__name__)
++
++
++class PortForwarding(neutron.NeutronResource):
++    """A resource for managing Neutron virtual router port forwarding.
++
++    The neutron API has been extended with support for virtual router port
++    forwarding (i.e., DNAT). This resource adds port forwarding rules.
++    """
++    neutron_api_key = 'portforwarding'
++
++    PROPERTIES = (
++        ROUTER_ID, INSIDE_ADDR, INSIDE_PORT,
++        OUTSIDE_PORT, PROTOCOL, DESCRIPTION,
++    ) = (
++        'router_id',
++        'inside_addr', 'inside_port', 'outside_port',
++        'protocol', 'description',
++    )
++
++    ATTRIBUTES = (
++        SHOW, ROUTER_ID, PORT_ID, INSIDE_ADDR, INSIDE_PORT,
++        OUTSIDE_PORT, PROTOCOL, DESCRIPTION,
++    ) = (
++        'show', 'router_id', 'port_id',
++        'inside_addr', 'inside_port', 'outside_port',
++        'protocol', 'description',
++    )
++
++    properties_schema = {
++        ROUTER_ID: properties.Schema(
++            properties.Schema.STRING,
++            _('The name or uuid of the virtual router.'),
++            required=True,
++            constraints=[
++                constraints.CustomConstraint('neutron.router')
++            ],
++        ),
++        INSIDE_ADDR: properties.Schema(
++            properties.Schema.STRING,
++            _('The private IPv4 address to be the destination of the '
++              'forwarding rule.'),
++            required=True,
++            update_allowed=True,
++            constraints=[
++                constraints.AllowedPattern(
++                    '^[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}$',
++                    description='IPv4 Address'),
++            ]
++        ),
++        INSIDE_PORT: properties.Schema(
++            properties.Schema.NUMBER,
++            _('The private layer4 protocol port number to be the destination '
++              'of the forwarding rule.'),
++            required=True,
++            constraints=[
++                constraints.Range(min=0, max=65535),
++            ],
++            update_allowed=True
++        ),
++        OUTSIDE_PORT: properties.Schema(
++            properties.Schema.NUMBER,
++            _('The public layer4 protocol port number.'),
++            required=True,
++            constraints=[
++                constraints.Range(min=0, max=65535),
++            ],
++            update_allowed=True
++        ),
++        PROTOCOL: properties.Schema(
++            properties.Schema.STRING,
++            _('The layer4 protocol type.'),
++            required=True,
++            constraints=[
++                constraints.AllowedValues(['tcp', 'udp', 'udp-lite',
++                                           'sctp', 'dccp']),
++            ],
++            update_allowed=True
++        ),
++        DESCRIPTION: properties.Schema(
++            properties.Schema.STRING,
++            _('User defined descriptive text.'),
++            update_allowed=True
++        ),
++    }
++
++    attributes_schema = {
++        ROUTER_ID: attributes.Schema(
++            _("The parent virtual router."),
++            type=attributes.Schema.STRING
++        ),
++        PORT_ID: attributes.Schema(
++            _("The virtual port associated to the private IPv4 address."),
++            type=attributes.Schema.STRING
++        ),
++        INSIDE_ADDR: attributes.Schema(
++            _("The private IPv4 address."),
++            type=attributes.Schema.STRING
++        ),
++        INSIDE_PORT: attributes.Schema(
++            _("The private layer4 protocol port number."),
++            type=attributes.Schema.INTEGER
++        ),
++        OUTSIDE_PORT: attributes.Schema(
++            _("The public layer4 protocol port number."),
++            type=attributes.Schema.INTEGER
++        ),
++        PROTOCOL: attributes.Schema(
++            _("The layer4 protocol name."),
++            type=attributes.Schema.STRING
++        ),
++        DESCRIPTION: attributes.Schema(
++            _("The user defined descriptive text."),
++            type=attributes.Schema.STRING
++        )
++    }
++
++    def validate(self):
++        super(PortForwarding, self).validate()
++
++    def handle_create(self):
++        props = self.prepare_properties(
++            self.properties,
++            self.physical_resource_name())
++        neutron_object = self.client().create_portforwarding(
++            {self.neutron_api_key: props})[self.neutron_api_key]
++        self.resource_id_set(neutron_object['id'])
++
++    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
++        if prop_diff:
++            self.prepare_update_properties(prop_diff)
++            # Do special case handling based on props.
++            # No special cases at this time.
++            LOG.debug('updating portforwarding with %s' % prop_diff)
++            self.client().update_portforwarding(
++                self.resource_id, {self.neutron_api_key: prop_diff})
++
++    def _show_resource(self):
++        return self.client().show_portforwarding(
++            self.resource_id)[self.neutron_api_key]
++
++    def check_create_complete(self, *args):
++        attributes = self._show_resource()
++        return bool('id' in attributes)
++
++    def check_update_complete(self, *args):
++        attributes = self._show_resource()
++        return bool('id' in attributes)
++
++    def handle_delete(self):
++        if self.resource_id is None:
++            return
++        try:
++            self.client().delete_portforwarding(self.resource_id)
++        except neutron_exp.NeutronClientException as ex:
++            self.client_plugin().ignore_not_found(ex)
++        else:
++            return True
++
++
++def resource_mapping():
++    return {
++        'WR::Neutron::PortForwarding': PortForwarding,
++    }
+diff --git a/heat/tests/test_resource.py b/heat/tests/test_resource.py
+index 1cd1113..1955d01 100644
+--- a/heat/tests/test_resource.py
++++ b/heat/tests/test_resource.py
+@@ -4503,7 +4503,8 @@ class TestResourceMapping(common.HeatTestCase):
+             # Platform type::Service/Type::Optional Sub-sections::Name
+             self.assertGreaterEqual(len(type_elements), 3)
+             # type should be OS or AWS
+-            self.assertIn(type_elements[0], ('AWS', 'OS'))
++            # WRS adds new 'WR' type
++            self.assertIn(type_elements[0], ('AWS', 'OS', 'WR'))
+             # check that value is a class object
+             self.assertIsInstance(r_class, six.class_types)
+             # check that class is subclass of Resource base class
+diff --git a/heat/tests/wr/test_neutron_port_forwarding.py b/heat/tests/wr/test_neutron_port_forwarding.py
+new file mode 100644
+index 0000000..c68bbd7
+--- /dev/null
++++ b/heat/tests/wr/test_neutron_port_forwarding.py
+@@ -0,0 +1,264 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++#
++# Copyright (c) 2015 Wind River Systems, Inc.
++#
++#
++#
++#
++#
++
++import copy
++import mock
++import six
++
++from neutronclient.common import exceptions
++from neutronclient.v2_0 import client as neutronclient
++
++from heat.common import exception
++from heat.common import template_format
++from heat.engine.clients.os.neutron import neutron_constraints
++from heat.engine.resources.wr import neutron_port_forwarding as npf
++from heat.engine import scheduler
++from heat.tests import common
++from heat.tests import utils
++
++
++port_forwarding_template = '''
++heat_template_version: 2015-04-30
++description: This template defines a virtual router port forwarding rule
++resources:
++  my_rule:
++    type: WR::Neutron::PortForwarding
++    properties:
++         router_id: 9649c220-874e-443c-a2ab-d6ac7ccf7b3
++         inside_addr: 192.168.1.25
++         inside_port: 80
++         outside_port: 8080
++         protocol: tcp
++         description: 'port forwarding rule description'
++'''
++
++tenant_id = "dd1c1ebd-d104-4988-be3b-3b1e1d59bfae"
++router_id = "9649c220-874e-443c-a2ab-d6ac7ccf7b3"
++port_id = "a4a28ac1-73a3-4793-b139-7cf4449f392e"
++pfr_dict_id = "2f096d58-f0c4-478a-9a49-0196fe1b0871"
++pfr_dict = {
++    "id": pfr_dict_id,
++    "port_id": port_id,
++    "router_id": router_id,
++    "tenant_id": tenant_id,
++    "inside_addr": "192.168.1.25",
++    "inside_port": 80,
++    "outside_port": 8080,
++    "protocol": "tcp",
++    "description": "port forwarding rule description",
++}
++
++pfr_dict_done = {
++    "portforwarding": pfr_dict
++}
++
++
++def stub_fn(*args):
++    pass
++
++
++class NeutronPortForwardingTest(common.HeatTestCase):
++
++    def setUp(self):
++        super(NeutronPortForwardingTest, self).setUp()
++        self.m.StubOutWithMock(neutron_constraints.RouterConstraint,
++                               'validate_with_client')
++
++        # If we are using a version of NeutronClient without portforwarding
++        # we must update the client instance using setattr BEFORE we can stub
++        try:
++            print(neutronclient.Client.create_portforwarding)
++        except Exception:
++            # Assume that if create_portforwarding is missing all 4 are missing
++            setattr(neutronclient.Client, 'create_portforwarding', stub_fn)
++            setattr(neutronclient.Client, 'delete_portforwarding', stub_fn)
++            setattr(neutronclient.Client, 'show_portforwarding', stub_fn)
++            setattr(neutronclient.Client, 'update_portforwarding', stub_fn)
++
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'create_portforwarding')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'delete_portforwarding')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'show_portforwarding')
++        self.m.StubOutWithMock(neutronclient.Client,
++                               'update_portforwarding')
++
++    def create_portforwarding(self):
++        neutron_constraints.RouterConstraint.validate_with_client(
++            mock.ANY, pfr_dict['router_id']
++        ).AndReturn(None)
++
++        neutronclient.Client.create_portforwarding({
++            'portforwarding': {
++                'router_id': pfr_dict['router_id'],
++                'inside_addr': pfr_dict['inside_addr'],
++                'inside_port': pfr_dict['inside_port'],
++                'outside_port': pfr_dict['outside_port'],
++                'protocol': pfr_dict['protocol'],
++                'description': pfr_dict['description'],
++            }
++        }).AndReturn(pfr_dict_done)
++
++        neutronclient.Client.show_portforwarding(
++            pfr_dict_id
++        ).AndReturn(pfr_dict_done)
++
++        snippet = template_format.parse(port_forwarding_template)
++        self.stack = utils.parse_stack(snippet)
++        resource_defns = self.stack.t.resource_definitions(self.stack)
++        return npf.PortForwarding('portforwarding',
++                                  resource_defns['my_rule'],
++                                  self.stack)
++
++    def test_create(self):
++        rsrc = self.create_portforwarding()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_create_failed(self):
++        neutron_constraints.RouterConstraint.validate_with_client(
++            mock.ANY, pfr_dict['router_id']
++        ).AndReturn(None)
++
++        # This template is valid, but simulate a failure
++        neutronclient.Client.create_portforwarding({
++            'portforwarding': {
++                'router_id': pfr_dict['router_id'],
++                'inside_addr': pfr_dict['inside_addr'],
++                'inside_port': pfr_dict['inside_port'],
++                'outside_port': pfr_dict['outside_port'],
++                'protocol': pfr_dict['protocol'],
++                'description': pfr_dict['description'],
++            }
++        }).AndRaise(exceptions.NeutronClientException())
++        self.m.ReplayAll()
++
++        snippet = template_format.parse(port_forwarding_template)
++        stack = utils.parse_stack(snippet)
++        resource_defns = stack.t.resource_definitions(stack)
++        rsrc = npf.PortForwarding(
++            'portforwarding', resource_defns['my_rule'], stack)
++
++        error = self.assertRaises(exception.ResourceFailure,
++                                  scheduler.TaskRunner(rsrc.create))
++
++        self.assertEqual(
++            'NeutronClientException: resources.portforwarding:' +
++            ' An unknown exception occurred.',
++            six.text_type(error))
++        self.assertEqual((rsrc.CREATE, rsrc.FAILED), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete(self):
++        rsrc = self.create_portforwarding()
++        neutronclient.Client.delete_portforwarding(pfr_dict_id)
++        neutronclient.Client.show_portforwarding(pfr_dict_id).AndRaise(
++            exceptions.NeutronClientException(status_code=404))
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        scheduler.TaskRunner(rsrc.delete)()
++        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete_already_gone(self):
++        neutronclient.Client.delete_portforwarding(pfr_dict_id).AndRaise(
++            exceptions.NeutronClientException(status_code=404))
++
++        rsrc = self.create_portforwarding()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        scheduler.TaskRunner(rsrc.delete)()
++        self.assertEqual((rsrc.DELETE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_delete_failed(self):
++        neutronclient.Client.delete_portforwarding(pfr_dict_id).AndRaise(
++            exceptions.NeutronClientException(status_code=400))
++
++        rsrc = self.create_portforwarding()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.ResourceFailure,
++                                  scheduler.TaskRunner(rsrc.delete))
++        self.assertEqual(
++            'NeutronClientException: resources.portforwarding:' +
++            ' An unknown exception occurred.',
++            six.text_type(error))
++        self.assertEqual((rsrc.DELETE, rsrc.FAILED), rsrc.state)
++        self.m.VerifyAll()
++
++    def test_attribute(self):
++        rsrc = self.create_portforwarding()
++        neutronclient.Client.show_portforwarding(pfr_dict_id).MultipleTimes(
++        ).AndReturn(pfr_dict_done)
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertDictContainsSubset({'port_id': port_id},
++                                      rsrc.FnGetAtt('show'))
++        self.m.VerifyAll()
++
++    def test_attribute_failed(self):
++        rsrc = self.create_portforwarding()
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        error = self.assertRaises(exception.InvalidTemplateAttribute,
++                                  rsrc.FnGetAtt, 'FOO')
++        self.assertEqual(
++            'The Referenced Attribute (portforwarding FOO) is '
++            'incorrect.', six.text_type(error))
++        self.m.VerifyAll()
++
++    def mock_update_portforwarding(self,
++                                   update_props,
++                                   portforwarding_id=pfr_dict_id):
++        neutron_constraints.RouterConstraint.validate_with_client(
++            mock.ANY, pfr_dict['router_id']
++        ).AndReturn(None)
++
++        neutronclient.Client.update_portforwarding(
++            portforwarding_id,
++            {'portforwarding': update_props}).AndReturn(None)
++
++    def test_update(self):
++        rsrc = self.create_portforwarding()
++
++        new_description = 'new description'
++        update_props = {'description': new_description}
++        self.mock_update_portforwarding(update_props)
++        pfr_dict_changed = copy.deepcopy(pfr_dict_done)
++        pfr_dict_changed['portforwarding']['description'] = new_description
++        neutronclient.Client.show_portforwarding(
++            pfr_dict_id
++        ).AndReturn(pfr_dict_changed)
++        self.m.ReplayAll()
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++
++        # Do an update
++        props = rsrc.t._properties.copy()
++        props['description'] = new_description
++        update_template = rsrc.t.freeze(properties=props)
++        scheduler.TaskRunner(rsrc.update, update_template)()
++
++        self.assertEqual((rsrc.UPDATE, rsrc.COMPLETE), rsrc.state)
++        self.m.VerifyAll()
+-- 
+2.7.4
+

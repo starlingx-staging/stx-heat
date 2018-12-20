@@ -1,0 +1,372 @@
+From cbab35491df009947abce371c1e7c4a8950fb710 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 13:33:54 -0500
+Subject: [PATCH 05/57] Support for VCPU autoscaling (scaling VCPUs within Server)
+
+This code provides a way to trigger a CPU scale up or DOWN to a VM.
+the base class was refactored so some of the code needed to be changed to reflect the new methods
+
+Pike rebase expects a NoActionRequired exception when scaling not allowed
+---
+ heat/engine/resources/wr/__init__.py          |   0
+ heat/engine/resources/wr/wr_scaling_policy.py | 220 ++++++++++++++++++++++++++
+ heat/tests/wr/test_wr_scaling_policy.py       | 116 ++++++++++++++
+ 3 files changed, 336 insertions(+)
+ create mode 100644 heat/engine/resources/wr/__init__.py
+ create mode 100644 heat/engine/resources/wr/wr_scaling_policy.py
+ create mode 100644 heat/tests/wr/test_wr_scaling_policy.py
+
+diff --git a/heat/engine/resources/wr/__init__.py b/heat/engine/resources/wr/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/heat/engine/resources/wr/wr_scaling_policy.py b/heat/engine/resources/wr/wr_scaling_policy.py
+new file mode 100644
+index 0000000..ee9df6d
+--- /dev/null
++++ b/heat/engine/resources/wr/wr_scaling_policy.py
+@@ -0,0 +1,220 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++#
++# Copyright (c) 2013-2014 Wind River Systems, Inc.
++#
++#
++#
++#
++#
++
++from oslo_log import log as logging
++import six
++
++from heat.common.i18n import _
++from heat.engine import attributes
++from heat.engine import constraints
++from heat.engine import properties
++from heat.engine import resource
++from heat.engine.resources import signal_responder
++from heat.scaling import cooldown
++
++LOG = logging.getLogger(__name__)
++
++
++class ScalingPolicy(signal_responder.SignalResponder,
++                    cooldown.CooldownMixin):
++    """A Resource for scaling Guest VCPUs.
++
++    This enables HEAT framework to dynamically resize (in terms of number of
++    guest vcpus) a VM when policy criteria described in the template is met.
++    """
++
++    PROPERTIES = (
++        SERVER_NAME, SCALING_RESOURCE, SCALING_DIRECTION,
++        COOLDOWN,
++    ) = (
++        'ServerName', 'ScalingResource', 'ScalingDirection', 'Cooldown',
++    )
++
++    SCALE_UP, SCALE_DOWN = ('up', 'down')
++
++    CPU = ('cpu')
++
++    ATTRIBUTES = (
++        ALARM_URL,
++    ) = (
++        'AlarmUrl',
++    )
++
++    properties_schema = {
++        SERVER_NAME: properties.Schema(
++            properties.Schema.STRING,
++            _('Name or ID of Server(OS::Nova::Server) to apply policy to.'),
++            constraints=[
++                constraints.CustomConstraint('nova.server')
++            ],
++            required=True
++        ),
++        SCALING_RESOURCE: properties.Schema(
++            properties.Schema.STRING,
++            _('Type of resource need to be scaled.'),
++            update_allowed=True,
++            constraints=[
++                constraints.AllowedValues([CPU]),
++            ],
++            default=CPU
++        ),
++        SCALING_DIRECTION: properties.Schema(
++            properties.Schema.STRING,
++            _('Direction of adjustment.'),
++            required=True,
++            constraints=[
++                constraints.AllowedValues([SCALE_UP, SCALE_DOWN]),
++            ],
++            update_allowed=True
++        ),
++        COOLDOWN: properties.Schema(
++            properties.Schema.NUMBER,
++            _('Cooldown period, in seconds.'),
++            update_allowed=True
++        ),
++    }
++
++    attributes_schema = {
++        ALARM_URL: attributes.Schema(
++            _("A signed url to handle the alarm. (Heat extension).")
++        ),
++    }
++
++    def handle_create(self):
++        super(ScalingPolicy, self).handle_create()
++        self.resource_id_set(self._get_user_id())
++
++    def handle_update(self, json_snippet, tmpl_diff, prop_diff):
++        """If Properties has changed, update self.properties.
++
++        This ensures we get the new values during any subsequent adjustment.
++        """
++        if prop_diff:
++            LOG.info('updating %s Alarm' % self.name)
++            self.properties = json_snippet.properties(self.properties_schema,
++                                                      self.context)
++
++            LOG.info('%s Alarm updated, ScalingResource=%s,'
++                     'ScalingDirection=%s,'
++                     ' Cooldown=%s' % (self.name,
++                                       self.properties[self.SCALING_RESOURCE],
++                                       self.properties[self.SCALING_DIRECTION],
++                                       self.properties[self.COOLDOWN]))
++
++    def handle_signal(self, details=None):
++        if self.action in (self.SUSPEND, self.DELETE):
++            msg = _('Cannot signal resource during %s') % self.action
++            raise Exception(msg)
++
++        # ceilometer sends details like this:
++        # {u'alarm_id': ID, u'previous': u'ok', u'current': u'alarm',
++        #  u'reason': u'...'})
++        # in this policy we currently assume that this gets called
++        # only when there is an alarm. But the template writer can
++        # put the policy in all the alarm notifiers (nodata, and ok).
++        #
++        # our watchrule has upper case states so lower() them all.
++        if details is None:
++            alarm_state = 'alarm'
++        else:
++            alarm_state = details.get('current',
++                                      details.get('state', 'alarm')).lower()
++
++        LOG.info(_('%(name)s Alarm, new state %(state)s')
++                 % {'name': self.name, 'state': alarm_state})
++
++        if alarm_state != 'alarm':
++            return
++
++        # Raise NoActionRequired if scaling not allowed
++        self._check_scaling_allowed()
++
++        cooldown_reason = "Indeterminate"
++        size_changed = False
++        try:
++            server_id = self.properties[self.SERVER_NAME]
++            server = self.client_plugin('nova').get_server(server_id)
++
++            vcpu_key = 'wrs-res:vcpus'
++            # Value is a list that looks like : [min, current, max]
++            vcpu_info = server.__getattr__(vcpu_key)
++            vcpu_min = vcpu_info[0]
++            vcpus = vcpu_info[1]
++            vcpu_max = vcpu_info[2]
++            scale_dir = self.properties[self.SCALING_DIRECTION]
++            LOG.debug('%s Evaluating %d %d %d Server %s Resource %s %s' %
++                      (self.name, vcpu_min, vcpus, vcpu_max, server.name,
++                       self.properties[self.SCALING_RESOURCE],
++                       self.properties[self.SCALING_DIRECTION]))
++            if scale_dir == self.SCALE_DOWN and vcpu_min == vcpus:
++                cooldown_reason = _('Server %(name)s %(res)s'
++                                    ' %(dir)s already at min %(val)d') % {
++                    'name': server.name,
++                    'res': self.properties[self.SCALING_RESOURCE],
++                    'dir': self.properties[self.SCALING_DIRECTION],
++                    'val': vcpu_min}
++                LOG.info("Scale rejected due to %s" % cooldown_reason)
++            elif scale_dir == self.SCALE_UP and vcpu_max == vcpus:
++                cooldown_reason = _('Server %(name)s %(res)s'
++                                    ' %(dir)s already at max %(val)d') % {
++                    'name': server.name,
++                    'res': self.properties[self.SCALING_RESOURCE],
++                    'dir': self.properties[self.SCALING_DIRECTION],
++                    'val': vcpu_max}
++                LOG.info("Scale rejected due to %s" % cooldown_reason)
++            else:
++                try:
++                    cooldown_reason = _('Server %(name)s %(res)s'
++                                        ' %(dir)s accepted') % {
++                        'name': server.name,
++                        'res': self.properties[self.SCALING_RESOURCE],
++                        'dir': self.properties[self.SCALING_DIRECTION]}
++                    LOG.info("Scale  %s" % cooldown_reason)
++                    server.scale(self.properties[self.SCALING_RESOURCE],
++                                 self.properties[self.SCALING_DIRECTION])
++                    size_changed = True
++                except Exception as scale_ex:
++                    cooldown_reason = _('Server %(name)s %(res)s'
++                                        ' %(dir)s exception %(exc)s') % {
++                        'name': server.name,
++                        'res': self.properties[self.SCALING_RESOURCE],
++                        'dir': self.properties[self.SCALING_DIRECTION],
++                        'exc': str(scale_ex)}
++                    LOG.error("Scale %s" % cooldown_reason)
++        finally:
++            # Set cooldown even if skipped adjustment due to being at boundary
++            self._finished_scaling(cooldown_reason, size_changed)
++
++    def _resolve_attribute(self, name):
++        # heat extension: "AlarmUrl" returns the url to post to the policy
++        # when there is an alarm.
++        if self.resource_id is None:
++            return
++        if name == self.ALARM_URL:
++            return six.text_type(self._get_ec2_signed_url())
++
++    def get_reference_id(self):
++        return resource.Resource.get_reference_id(self)
++
++
++def resource_mapping():
++    return {
++        'OS::WR::ScalingPolicy': ScalingPolicy
++    }
+diff --git a/heat/tests/wr/test_wr_scaling_policy.py b/heat/tests/wr/test_wr_scaling_policy.py
+new file mode 100644
+index 0000000..866b09b
+--- /dev/null
++++ b/heat/tests/wr/test_wr_scaling_policy.py
+@@ -0,0 +1,116 @@
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++#
++#  Copyright (c) 2015 Wind River Systems, Inc.
++#
++# The right to copy, distribute, modify, or otherwise make use
++# of this software may be licensed only pursuant to the terms
++# of an applicable Wind River license agreement.
++#
++
++import mock
++import six
++
++from oslo_config import cfg
++
++from heat.common import exception
++from heat.common import template_format
++from heat.engine.clients.os import nova
++from heat.engine import resource
++from heat.engine import scheduler
++from heat.tests.common import HeatTestCase
++from heat.tests import utils
++
++from heat.engine.resources.wr import wr_scaling_policy as sp
++
++as_template = '''
++{
++    'heat_template_version': '2013-05-23',
++    'resources': {
++        'scale_up': {
++            'type': 'OS::WR::ScalingPolicy',
++            'properties': {
++                'ServerName': '5678',
++                'ScalingResource': 'cpu',
++                'ScalingDirection': 'up',
++                'Cooldown': '60',
++            }
++        }
++    }
++}
++'''
++
++
++class ScalingPolicyTest(HeatTestCase):
++    def setUp(self):
++        super(ScalingPolicyTest, self).setUp()
++        cfg.CONF.set_default('heat_waitcondition_server_url',
++                             'http://server.test:8000/v1/waitcondition')
++        self.stub_keystoneclient()
++        self.ctx = utils.dummy_context()
++
++        # For unit testing purpose. Register resource provider
++        # explicitly.
++        resource._register_class("OS::WR::ScalingPolicy", sp.ScalingPolicy)
++
++    def _stub_nova_server_get(self, not_found=False):
++        mock_server = mock.MagicMock()
++        mock_server.image = {'id': 'dd619705-468a-4f7d-8a06-b84794b3561a'}
++        if not_found:
++            self.patchobject(nova.NovaClientPlugin, 'get_server',
++                             side_effect=exception.EntityNotFound(
++                                 entity='Server',
++                                 name='5678'))
++        else:
++            self.patchobject(nova.NovaClientPlugin, 'get_server',
++                             return_value=mock_server)
++
++    def create_scaling_policy(self, t, stack, resource_name):
++        rsrc = stack[resource_name]
++        self.assertIsNone(rsrc.validate())
++        scheduler.TaskRunner(rsrc.create)()
++        self.assertEqual((rsrc.CREATE, rsrc.COMPLETE), rsrc.state)
++        return rsrc
++
++    def test_resource_mapping(self):
++        mapping = sp.resource_mapping()
++        self.assertEqual(1, len(mapping))
++        self.assertEqual(sp.ScalingPolicy, mapping['OS::WR::ScalingPolicy'])
++
++    def test_scaling_policy_constraint_validation(self):
++        self._stub_nova_server_get(not_found=True)
++        t = template_format.parse(as_template)
++        stack = utils.parse_stack(t)
++        exc = self.assertRaises(exception.StackValidationFailed,
++                                stack.validate)
++        self.assertIn("The Server (5678) could not be found.",
++                      six.text_type(exc))
++        self.m.ReplayAll()
++        self.m.VerifyAll()
++
++    def test_scaling_policy_creation(self):
++        t = template_format.parse(as_template)
++        stack = utils.parse_stack(t)
++        self._stub_nova_server_get()
++        self.m.ReplayAll()
++        self.create_scaling_policy(t, stack, 'scale_up')
++        self.m.VerifyAll()
++
++    def test_scaling_policy_signal(self):
++        t = template_format.parse(as_template)
++        stack = utils.parse_stack(t)
++        self._stub_nova_server_get()
++        self.m.ReplayAll()
++        up_policy = self.create_scaling_policy(t, stack, 'scale_up')
++        up_policy.handle_signal()
++        self.m.VerifyAll()
+-- 
+2.7.4
+

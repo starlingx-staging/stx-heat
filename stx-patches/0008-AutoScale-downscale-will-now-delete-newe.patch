@@ -1,0 +1,123 @@
+From 683fe61b9e611d51a1a98b219f8c67e1024a2268 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:30:08 -0500
+Subject: [PATCH 08/57] AutoScale downscale will now delete newest items
+
+grouputils  sorting no longer uses FAIL for its sort criteria
+---
+ heat/common/grouputils.py                              |  2 +-
+ heat/engine/resources/openstack/heat/instance_group.py |  4 ++--
+ heat/scaling/template.py                               |  8 ++++++--
+ heat/tests/autoscaling/test_scaling_template.py        |  5 +++--
+ heat/tests/openstack/heat/test_instance_group.py       | 16 ++++++++++++----
+ 5 files changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/heat/common/grouputils.py b/heat/common/grouputils.py
+index 5cb8447..5228a19 100644
+--- a/heat/common/grouputils.py
++++ b/heat/common/grouputils.py
+@@ -43,7 +43,7 @@ def get_members(group, include_failed=False):
+                      if include_failed or r.status != r.FAILED]
+ 
+     return sorted(resources,
+-                  key=lambda r: (r.status != r.FAILED, r.created_time, r.name))
++                  key=lambda r: (r.created_time, r.name))
+ 
+ 
+ def get_member_refids(group, exclude=None):
+diff --git a/heat/engine/resources/openstack/heat/instance_group.py b/heat/engine/resources/openstack/heat/instance_group.py
+index 75f3c53..34f5569 100644
+--- a/heat/engine/resources/openstack/heat/instance_group.py
++++ b/heat/engine/resources/openstack/heat/instance_group.py
+@@ -264,7 +264,7 @@ class InstanceGroup(stack_resource.StackResource):
+                                                           include_failed=True)
+         definitions = list(template.member_definitions(
+             old_resources, instance_definition, num_instances, num_replace,
+-            short_id.generate_id))
++            short_id.generate_id, delete_oldest=False))
+ 
+         child_env = environment.get_child_environment(
+             self.stack.env,
+@@ -369,7 +369,7 @@ class InstanceGroup(stack_resource.StackResource):
+     def resize(self, new_capacity):
+         """Resize the instance group to the new capacity.
+ 
+-        When shrinking, the oldest instances will be removed.
++        When shrinking, the newest instances will be removed.
+         """
+         new_template = self._create_template(new_capacity)
+         try:
+diff --git a/heat/scaling/template.py b/heat/scaling/template.py
+index ca83ca6..60b0953 100644
+--- a/heat/scaling/template.py
++++ b/heat/scaling/template.py
+@@ -20,7 +20,7 @@ def _identity(resource_name, definition):
+ 
+ def member_definitions(old_resources, new_definition,
+                        num_resources, num_new,
+-                       get_new_id, customise=_identity):
++                       get_new_id, customise=_identity, delete_oldest=True):
+     """Iterate over resource definitions for a scaling group
+ 
+     Generates the definitions for the next change to the scaling group. Each
+@@ -38,7 +38,11 @@ def member_definitions(old_resources, new_definition,
+     with any shortfall made up by modifying the definitions of existing
+     resources.
+     """
+-    old_resources = old_resources[-num_resources:]
++    if delete_oldest:
++        old_resources = old_resources[-num_resources:]
++    else:
++        # remove the most recent items (ones at end of list)
++        old_resources = old_resources[:num_resources]
+     num_create = num_resources - len(old_resources)
+     num_replace = num_new - num_create
+ 
+diff --git a/heat/tests/autoscaling/test_scaling_template.py b/heat/tests/autoscaling/test_scaling_template.py
+index 989e108..dc54920 100644
+--- a/heat/tests/autoscaling/test_scaling_template.py
++++ b/heat/tests/autoscaling/test_scaling_template.py
+@@ -47,8 +47,9 @@ class ResourceTemplatesTest(common.HeatTestCase):
+             ('old-id-0', {'type': 'Foo'}),
+             ('old-id-1', {'type': 'Foo'})]
+         templates = template.member_definitions(old_resources, {'type': 'Bar'},
+-                                                1, 2, self.next_id)
+-        expected = [('old-id-1', {'type': 'Bar'})]
++                                                1, 2, self.next_id,
++                                                delete_oldest=False)
++        expected = [('old-id-0', {'type': 'Bar'})]
+         self.assertEqual(expected, list(templates))
+ 
+     def test_replace_some_units(self):
+diff --git a/heat/tests/openstack/heat/test_instance_group.py b/heat/tests/openstack/heat/test_instance_group.py
+index fb98e11..0627d79 100644
+--- a/heat/tests/openstack/heat/test_instance_group.py
++++ b/heat/tests/openstack/heat/test_instance_group.py
+@@ -402,12 +402,20 @@ class ReplaceTest(InstanceGroupWithNestedStack):
+ 
+ class ResizeWithFailedInstancesTest(InstanceGroupWithNestedStack):
+     scenarios = [
+-        ('1', dict(size=3, failed=['r1'], content={'r2', 'r3', 'r4'})),
++        # OLD way automatically puts FAILED VMs at the front of the list
++        # ('1', dict(size=3, failed=['r1'], content={'r2', 'r3', 'r4'})),
++        # ('2', dict(size=3, failed=['r4'], content={'r1', 'r2', 'r3'})),
++        # ('3', dict(size=2, failed=['r1', 'r2'], content={'r3', 'r4'})),
++        # ('4', dict(size=2, failed=['r3', 'r4'], content={'r1', 'r2'})),
++        # ('5', dict(size=2, failed=['r2', 'r3'], content={'r1', 'r4'})),
++        # ('6', dict(size=3, failed=['r2', 'r3'], content={'r1', 'r3', 'r4'}))]
++        # leaves order alone, and deleted from END of the list
++        ('1', dict(size=3, failed=['r1'], content={'r1', 'r2', 'r3'})),
+         ('2', dict(size=3, failed=['r4'], content={'r1', 'r2', 'r3'})),
+-        ('3', dict(size=2, failed=['r1', 'r2'], content={'r3', 'r4'})),
++        ('3', dict(size=2, failed=['r1', 'r2'], content={'r1', 'r2'})),
+         ('4', dict(size=2, failed=['r3', 'r4'], content={'r1', 'r2'})),
+-        ('5', dict(size=2, failed=['r2', 'r3'], content={'r1', 'r4'})),
+-        ('6', dict(size=3, failed=['r2', 'r3'], content={'r1', 'r3', 'r4'}))]
++        ('5', dict(size=2, failed=['r2', 'r3'], content={'r1', 'r2'})),
++        ('6', dict(size=3, failed=['r2', 'r3'], content={'r1', 'r2', 'r3'}))]
+ 
+     def setUp(self):
+         super(ResizeWithFailedInstancesTest, self).setUp()
+-- 
+2.7.4
+

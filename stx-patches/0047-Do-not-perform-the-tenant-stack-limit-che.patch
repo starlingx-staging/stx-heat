@@ -1,0 +1,38 @@
+From 2b0082eca0eb6b5b3f93b209201df2a3f8a299dc Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Thu, 11 Jan 2018 10:51:39 -0600
+Subject: [PATCH 47/57] Do not perform the tenant stack limit check for admin user
+
+Removing stack creation limit for admin since admin can view all stacks, and stacks created by other tenants
+would have been counted in the limit check.
+---
+ heat/engine/service.py | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/heat/engine/service.py b/heat/engine/service.py
+index b54a0c1..ae854ca 100644
+--- a/heat/engine/service.py
++++ b/heat/engine/service.py
+@@ -671,11 +671,14 @@ class EngineService(service.ServiceBase):
+         if stack_object.Stack.get_by_name(cnxt, stack_name):
+             raise exception.StackExists(stack_name=stack_name)
+ 
+-        tenant_limit = cfg.CONF.max_stacks_per_tenant
+-        if stack_object.Stack.count_all(cnxt) >= tenant_limit:
+-            message = _("You have reached the maximum stacks per tenant, "
+-                        "%d. Please delete some stacks.") % tenant_limit
+-            raise exception.RequestLimitExceeded(message=message)
++        # Do not do a stack limit check for admin
++        # since admin can see all stacks.
++        if not cnxt.is_admin:
++            tenant_limit = cfg.CONF.max_stacks_per_tenant
++            if stack_object.Stack.count_all(cnxt) >= tenant_limit:
++                message = _("You have reached the maximum stacks per tenant, "
++                            "%d. Please delete some stacks.") % tenant_limit
++                raise exception.RequestLimitExceeded(message=message)
+         self._validate_template(cnxt, parsed_template)
+ 
+     def _validate_template(self, cnxt, parsed_template):
+-- 
+2.7.4
+

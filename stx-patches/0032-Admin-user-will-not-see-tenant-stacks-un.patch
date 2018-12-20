@@ -1,0 +1,65 @@
+From ba893b201c34c38bde773071c968805422e4b1df Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Wed, 25 Oct 2017 12:00:48 -0500
+Subject: [PATCH 32/57] Admin user will not see tenant stacks unless explicitly requested
+
+Admin user will only see their own stacks when invoking heat stack-list
+If an admin wished to see all tenants,they must invoke
+heat stack-list -g
+or
+openstack stack list --all-projects
+---
+ etc/heat/policy.json            |  4 ++--
+ heat/api/openstack/v1/stacks.py | 10 +++++++---
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/etc/heat/policy.json b/etc/heat/policy.json
+index f805f2c..6d60c0a 100644
+--- a/etc/heat/policy.json
++++ b/etc/heat/policy.json
+@@ -45,7 +45,7 @@
+     "stacks:detail": "rule:deny_stack_user",
+     "stacks:export": "rule:deny_stack_user",
+     "stacks:generate_template": "rule:deny_stack_user",
+-    "stacks:global_index": "rule:deny_everybody",
++    "stacks:global_index": "rule:context_is_admin",
+     "stacks:index": "rule:deny_stack_user",
+     "stacks:list_resource_types": "rule:deny_stack_user",
+     "stacks:list_template_versions": "rule:deny_stack_user",
+@@ -70,7 +70,7 @@
+     "stacks:list_outputs": "rule:deny_stack_user",
+     "stacks:show_output": "rule:deny_stack_user",
+ 
+-    "software_configs:global_index": "rule:deny_everybody",
++    "software_configs:global_index": "rule:context_is_admin",
+     "software_configs:index": "rule:deny_stack_user",
+     "software_configs:create": "rule:deny_stack_user",
+     "software_configs:show": "rule:deny_stack_user",
+diff --git a/heat/api/openstack/v1/stacks.py b/heat/api/openstack/v1/stacks.py
+index 11520ac..854175a 100644
+--- a/heat/api/openstack/v1/stacks.py
++++ b/heat/api/openstack/v1/stacks.py
+@@ -297,13 +297,17 @@ class StackController(object):
+                 'with_count',
+                 req.params.get('with_count'))
+ 
+-        if not filter_params:
+-            filter_params = None
+-
+         if use_admin_cnxt:
+             cnxt = context.get_admin_context()
+         else:
+             cnxt = req.context
++            # filter out stacks from other tenants
++            # cntx might be admin but we only want admin stacks
++            if cnxt.is_admin:
++                filter_params['tenant'] = cnxt.tenant_id
++
++        if not filter_params:
++            filter_params = None
+ 
+         stacks = self.rpc_client.list_stacks(cnxt,
+                                              filters=filter_params,
+-- 
+2.7.4
+

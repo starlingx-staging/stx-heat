@@ -1,0 +1,45 @@
+From ef0ddf47ade645f2cd559b20e194d73378f03844 Mon Sep 17 00:00:00 2001
+From: Jack Ding <jack.ding@windriver.com>
+Date: Wed, 25 Oct 2017 12:11:17 -0500
+Subject: [PATCH 36/57] IPv6 support for Ceilometer alarm_actions
+
+In a IPV6 lab, Ceilometer samples for cpu_uitl are generated,
+and "ceilometer alarm-list" shows "alarm" for scaling alarm when
+it is triggered, but there is no REST-API for scaling shown in heat-api.log.
+
+Root cause: The url in Ceilometer alarm_actions for ipv6 is not
+correctly formatted.
+
+Fix: format ipv6 url http://[abde::2]:8000/... instead of http://abde::2:8000/...
+---
+ heat/engine/resources/signal_responder.py | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/heat/engine/resources/signal_responder.py b/heat/engine/resources/signal_responder.py
+index 93b5e4c..dca48f0 100644
+--- a/heat/engine/resources/signal_responder.py
++++ b/heat/engine/resources/signal_responder.py
+@@ -11,6 +11,7 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
++import netaddr
+ import uuid
+ 
+ from keystoneclient.contrib.ec2 import utils as ec2_utils
+@@ -148,8 +149,11 @@ class SignalResponder(stack_user.StackUser):
+             # requires that the server which is running on
+             # http://internal_url:8000
+             # is the same as what is signed.
++            host_addr = cfg.CONF.heat_api_cfn.bind_host
++            if netaddr.IPAddress(host_addr).version == 6:
++                host_addr = "[%s]" % host_addr
+             signal_url = "%s://%s:%s%s%s" % ("http",
+-                                             cfg.CONF.heat_api_cfn.bind_host,
++                                             host_addr,
+                                              cfg.CONF.heat_api_cfn.bind_port,
+                                              "/v1",
+                                              signal_type)
+-- 
+2.7.4
+

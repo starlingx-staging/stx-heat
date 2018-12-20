@@ -1,0 +1,176 @@
+From 5b0385d0d0341affaa070d8c3b0698923b8a0cdf Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 15:41:16 -0500
+Subject: [PATCH 16/57] Cinder enhancements
+
+1) Add wrs-background-delete metadata support for cinder volume deletion
+If a heat cinder volume has metadata
+   'wrs-background-delete':'True'
+the heat stack will indicate the delete is successful almost immediately after issuing the delete
+ and not wait for the delete to complete and the volume to go into deleted or NotFound state
+
+2) Propagate Cinder create errors into HEAT failure messages
+
+If heat failed to create a cinder volume, the cinder error was always reported as Unknown in heat.
+Now it extracts the volume error field and shows that.
+
+3) Use force_delete when deleting Cinder volumes
+Originally: Use force delete when deleting cinder volumes through HEAT
+
+It is possible to get into situations where cinder and nova are out of sync,
+and cinder believes its volume is attached even though the VM no longer exists.
+This code uses the force_delete  to delete cinder volumes.  It no longer checks or cares
+if the volume is in use. If a volume is legitimately in use, the delete will fail as expected.
+---
+ heat/engine/resources/volume_base.py             | 15 +++++++++++----
+ heat/tests/aws/test_volume.py                    | 18 +++++++++---------
+ heat/tests/openstack/cinder/test_volume_utils.py |  5 ++++-
+ 3 files changed, 24 insertions(+), 14 deletions(-)
+
+diff --git a/heat/engine/resources/volume_base.py b/heat/engine/resources/volume_base.py
+index f9079a2..8c92461 100644
+--- a/heat/engine/resources/volume_base.py
++++ b/heat/engine/resources/volume_base.py
+@@ -53,7 +53,8 @@ class BaseVolume(resource.Resource):
+             return False
+         if vol.status == 'error':
+             raise exception.ResourceInError(
+-                resource_status=vol.status)
++                resource_status=vol.status,
++                status_reason=vol.error)
+         else:
+             raise exception.ResourceUnknownStatus(
+                 resource_status=vol.status,
+@@ -118,12 +119,13 @@ class BaseVolume(resource.Resource):
+         try:
+             cinder = self.client()
+             vol = cinder.volumes.get(self.resource_id)
+-            if vol.status == 'in-use':
+-                raise exception.Error(_('Volume in use'))
+             # if the volume is already in deleting status,
+             # just wait for the deletion to complete
+             if vol.status != 'deleting':
+-                cinder.volumes.delete(self.resource_id)
++                #
++                # Always use force delete (ie: downloading, attached)
++                # This will only fail if volume is truly in use
++                cinder.volumes.force_delete(self.resource_id)
+             return False
+         except Exception as ex:
+             self.client_plugin().ignore_not_found(ex)
+@@ -155,6 +157,11 @@ class BaseVolume(resource.Resource):
+                 raise exception.ResourceInError(status_reason='delete',
+                                                 resource_status=vol.status)
+             else:
++                # if wrs-background-delete is 'True'
++                # HEAT will not wait for it to complete
++                if vol.metadata.get('wrs-background-delete', False) == 'True':
++                    prg.delete['complete'] = True
++                    return True
+                 return False
+         return True
+ 
+diff --git a/heat/tests/aws/test_volume.py b/heat/tests/aws/test_volume.py
+index 2c62c86..35a66c9 100644
+--- a/heat/tests/aws/test_volume.py
++++ b/heat/tests/aws/test_volume.py
+@@ -76,7 +76,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
+         self.t = template_format.parse(volume_template)
+         self.use_cinder = False
+ 
+-    def _mock_create_volume(self, fv, stack_name, final_status='available'):
++    def _mock_create_volume(self, fv, stack_name, final_status='available',
++                            error=''):
+         cinder.CinderClientPlugin._create().MultipleTimes().AndReturn(
+             self.cinder_fc)
+         vol_name = utils.PhysName(stack_name, 'DataVolume')
+@@ -87,7 +88,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
+             metadata={u'Usage': u'Wiki Data Volume'}).AndReturn(
+                 vt_base.FakeVolume(fv))
+         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
+-        fv_ready = vt_base.FakeVolume(final_status, id=fv.id)
++        fv_ready = vt_base.FakeVolume(final_status, id=fv.id, error=error)
+         self.cinder_fc.volumes.get(fv.id).AndReturn(fv_ready)
+         return fv_ready
+ 
+@@ -109,10 +110,6 @@ class VolumeTest(vt_base.BaseVolumeTest):
+ 
+         rsrc = self.create_volume(self.t, stack, 'DataVolume')
+ 
+-        ex = self.assertRaises(exception.ResourceFailure,
+-                               scheduler.TaskRunner(rsrc.destroy))
+-        self.assertIn("Volume in use", six.text_type(ex))
+-
+         scheduler.TaskRunner(rsrc.destroy)()
+ 
+         self.m.VerifyAll()
+@@ -183,7 +180,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
+         stack_name = 'test_volume_create_error_stack'
+         cfg.CONF.set_override('action_retry_limit', 0)
+ 
+-        self._mock_create_volume(fv, stack_name, final_status='error')
++        self._mock_create_volume(fv, stack_name, final_status='error',
++                                 error='Unknown')
+ 
+         self.m.ReplayAll()
+ 
+@@ -470,7 +468,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
+                                       stack_name)
+ 
+         self.cinder_fc.volumes.get(fv.id).AndReturn(fv)
+-        self.cinder_fc.volumes.delete(fv.id).AndReturn(True)
++        self.cinder_fc.volumes.force_delete(fv.id).AndReturn(True)
+         self.cinder_fc.volumes.get(fv.id).AndReturn(
+             vt_base.FakeVolume('deleting'))
+         self.cinder_fc.volumes.get(fv.id).AndReturn(
+@@ -613,7 +611,8 @@ class VolumeTest(vt_base.BaseVolumeTest):
+         cfg.CONF.set_override('action_retry_limit', 0)
+         fv = self._mock_create_volume(vt_base.FakeVolume('creating'),
+                                       stack_name,
+-                                      final_status='error')
++                                      final_status='error',
++                                      error='Unknown')
+ 
+         self._mock_delete_volume(fv)
+         self.m.ReplayAll()
+@@ -681,6 +680,7 @@ class VolumeTest(vt_base.BaseVolumeTest):
+         self.cinder_fc.volumes.update(fv.id,
+                                       description=vol_name, name=vol_name)
+         fv.status = 'error'
++        fv.error = 'Unknown'
+         self.cinder_fc.volumes.get('vol-123').AndReturn(fv)
+ 
+         self.m.ReplayAll()
+diff --git a/heat/tests/openstack/cinder/test_volume_utils.py b/heat/tests/openstack/cinder/test_volume_utils.py
+index ce4df1b..96e3ead 100644
+--- a/heat/tests/openstack/cinder/test_volume_utils.py
++++ b/heat/tests/openstack/cinder/test_volume_utils.py
+@@ -36,6 +36,7 @@ class BaseVolumeTest(common.HeatTestCase):
+         self.m.StubOutWithMock(self.cinder_fc.volumes, 'create')
+         self.m.StubOutWithMock(self.cinder_fc.volumes, 'get')
+         self.m.StubOutWithMock(self.cinder_fc.volumes, 'delete')
++        self.m.StubOutWithMock(self.cinder_fc.volumes, 'force_delete')
+         self.m.StubOutWithMock(self.cinder_fc.volumes, 'extend')
+         self.m.StubOutWithMock(self.cinder_fc.volumes, 'update')
+         self.m.StubOutWithMock(self.cinder_fc.volumes, 'update_all_metadata')
+@@ -47,7 +48,7 @@ class BaseVolumeTest(common.HeatTestCase):
+     def _mock_delete_volume(self, fv):
+         self.cinder_fc.volumes.get(fv.id).AndReturn(
+             FakeVolume('available'))
+-        self.cinder_fc.volumes.delete(fv.id).AndReturn(True)
++        self.cinder_fc.volumes.force_delete(fv.id).AndReturn(True)
+         self.cinder_fc.volumes.get(fv.id).AndRaise(
+             cinder_exp.NotFound('Not found'))
+ 
+@@ -114,6 +115,8 @@ class FakeVolume(object):
+             setattr(self, key, value)
+         if 'id' not in attrs:
+             self.id = self._ID
++        if 'metadata' not in attrs:
++            self.metadata = {}
+ 
+ 
+ class FakeBackup(FakeVolume):
+-- 
+2.7.4
+

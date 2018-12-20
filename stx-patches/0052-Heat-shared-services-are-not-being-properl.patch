@@ -1,0 +1,30 @@
+From 23e634cf7a8fc7b3ec504def9a5ff475396e8fcd Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Wed, 21 Feb 2018 13:02:12 -0600
+Subject: [PATCH 52/57] Heat shared services are not being properly
+ detected
+
+If a shared service is configured for heat such as Glance, it was incorrectly using the normal
+service region because the code to determine whether or not a service is a shared service was flawed.
+This bug was found cutting and pasting the ceilometer changes from heat for region mode calculation
+---
+ heat/engine/clients/client_plugin.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/heat/engine/clients/client_plugin.py b/heat/engine/clients/client_plugin.py
+index 62263e9..759cc35 100644
+--- a/heat/engine/clients/client_plugin.py
++++ b/heat/engine/clients/client_plugin.py
+@@ -94,7 +94,8 @@ class ClientPlugin(object):
+         shared_services_types = cfg.CONF.shared_services_types
+         # Newton declares service_types = ['something'] per client
+         if shared_services_region_name:
+-            if self.service_types in shared_services_types:
++            # Convert lists to set and check for an intersection
++            if set(self.service_types) & set(shared_services_types):
+                 reg = shared_services_region_name
+         return reg
+ 
+-- 
+2.7.4
+

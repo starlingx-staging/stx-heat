@@ -1,0 +1,62 @@
+From fb88ee635440856a937dd927ef9bcf57e74a88f6 Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Tue, 19 Dec 2017 13:43:55 -0600
+Subject: [PATCH 39/57] Backwards compatability fix for wrs_qos attribute on network resource
+
+During rebase I updated the field from wrs_qos to wr_qos which breaks backward
+compatability with previous templates.
+---
+ heat/engine/resources/openstack/neutron/net.py | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/heat/engine/resources/openstack/neutron/net.py b/heat/engine/resources/openstack/neutron/net.py
+index 40173ad..fe56e47 100644
+--- a/heat/engine/resources/openstack/neutron/net.py
++++ b/heat/engine/resources/openstack/neutron/net.py
+@@ -33,12 +33,12 @@ class Net(neutron.NeutronResource):
+     PROPERTIES = (
+         NAME, VALUE_SPECS, ADMIN_STATE_UP, TENANT_ID, SHARED,
+         DHCP_AGENT_IDS, PORT_SECURITY_ENABLED, QOS_POLICY,
+-        WR_QOS,
++        WRS_QOS,
+         DNS_DOMAIN, TAGS,
+     ) = (
+         'name', 'value_specs', 'admin_state_up', 'tenant_id', 'shared',
+         'dhcp_agent_ids', 'port_security_enabled', 'qos_policy',
+-        'wr_qos',
++        'wrs_qos',
+         'dns_domain', 'tags',
+     )
+ 
+@@ -112,7 +112,7 @@ class Net(neutron.NeutronResource):
+             update_allowed=True,
+             support_status=support.SupportStatus(version='6.0.0')
+         ),
+-        WR_QOS: properties.Schema(
++        WRS_QOS: properties.Schema(
+             properties.Schema.STRING,
+             _('The name or ID of WR-QoS to attach to this network.'),
+             constraints=[
+@@ -211,7 +211,7 @@ class Net(neutron.NeutronResource):
+         if qos_policy:
+             props['qos_policy_id'] = qos_policy
+ 
+-        wrs_qos_policy = props.pop(self.WR_QOS, None)
++        wrs_qos_policy = props.pop(self.WRS_QOS, None)
+         if wrs_qos_policy:
+             props['wrs-tm:qos'] = wrs_qos_policy
+ 
+@@ -250,8 +250,8 @@ class Net(neutron.NeutronResource):
+                     qos_policy) if qos_policy else None
+             if self.TAGS in prop_diff:
+                 self.set_tags(prop_diff.pop(self.TAGS))
+-            if self.WR_QOS in prop_diff:
+-                wrs_qos_policy = prop_diff.pop(self.WR_QOS, None)
++            if self.WRS_QOS in prop_diff:
++                wrs_qos_policy = prop_diff.pop(self.WRS_QOS, None)
+                 prop_diff['wrs-tm:qos'] = wrs_qos_policy
+ 
+         if prop_diff:
+-- 
+2.7.4
+

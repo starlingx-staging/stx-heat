@@ -1,0 +1,82 @@
+From 42f85797a980da1ae42cdc458ae94c2a168179e3 Mon Sep 17 00:00:00 2001
+From: Al Bailey <Al.Bailey@windriver.com>
+Date: Wed, 25 Oct 2017 12:10:19 -0500
+Subject: [PATCH 35/57] UPSTREAM_BUG. Re-calculate outputs at the end of a stack-update
+
+Re-calculate outputs at the end of a stack-update  UPSTREAM_POTENTIAL
+
+The upstream code appears to allow a stack to be updated which alters its outputs (adding or removing ports)
+however the other stacks access its old (cached) outputs when attempting to use those as their inputs during update.
+This change causes the cache to be invalidated and the proper outputs are accessed.
+
+This also fixes a scenario where translation validation of older properties fails due to those properties being deleted during a stack update
+One (or both) of these changes could potentially be upstreamed.
+---
+ heat/engine/resource.py                  | 8 +++++++-
+ heat/engine/resources/stack_resource.py  | 3 +++
+ heat/tests/openstack/nova/test_server.py | 7 ++++---
+ 3 files changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/heat/engine/resource.py b/heat/engine/resource.py
+index f5d56a1..757fbc0 100644
+--- a/heat/engine/resource.py
++++ b/heat/engine/resource.py
+@@ -1432,7 +1432,13 @@ class Resource(status.ResourceStatus):
+         after_props = after.properties(self.properties_schema,
+                                        self.context)
+         self.translate_properties(after_props)
+-        self.translate_properties(before_props)
++        try:
++            self.translate_properties(before_props)
++        except Exception:
++            # (removing an output during update)
++            # We can ignore the translation of before_props
++            # This warning typically means the old stack removed something
++            LOG.warning("before_props update failed translate validation")
+ 
+         if (cfg.CONF.observe_on_update or self.converge) and before_props:
+             if not self.resource_id:
+diff --git a/heat/engine/resources/stack_resource.py b/heat/engine/resources/stack_resource.py
+index 3164c59..a214416 100644
+--- a/heat/engine/resources/stack_resource.py
++++ b/heat/engine/resources/stack_resource.py
+@@ -416,6 +416,9 @@ class StackResource(resource.Resource):
+             if ret:
+                 # Reset nested, to indicate we changed status
+                 self._nested = None
++                # (handle new outputs added by update)
++                # Clear outputs to trigger re-querying them
++                self._outputs = None
+             return ret
+         elif status == self.FAILED:
+             raise exception.ResourceFailure(status_reason, self,
+diff --git a/heat/tests/openstack/nova/test_server.py b/heat/tests/openstack/nova/test_server.py
+index 0ffa423..3ee0c3e 100644
+--- a/heat/tests/openstack/nova/test_server.py
++++ b/heat/tests/openstack/nova/test_server.py
+@@ -4105,9 +4105,10 @@ class ServersTest(common.HeatTestCase):
+ 
+         ex = glance.client_exception.EntityMatchNotFound(entity='image',
+                                                          args='Update Image')
++        # Querying after_props returns error but not before_props
+         self.patchobject(glance.GlanceClientPlugin,
+                          'find_image_by_name_or_id',
+-                         side_effect=[1, ex])
++                         side_effect=[ex, 1])
+         update_props = self.server_props.copy()
+         update_props['image'] = 'Update Image'
+         update_template = server.t.freeze(properties=update_props)
+@@ -4117,8 +4118,8 @@ class ServersTest(common.HeatTestCase):
+         err = self.assertRaises(exception.ResourceFailure,
+                                 updater)
+         self.assertEqual("StackValidationFailed: resources.my_server: "
+-                         "Property error: Properties.image: Error validating "
+-                         "value '1': No image matching Update Image.",
++                         "Property error: Properties.image: "
++                         "No image matching Update Image.",
+                          six.text_type(err))
+ 
+     def test_server_snapshot(self):
+-- 
+2.7.4
+

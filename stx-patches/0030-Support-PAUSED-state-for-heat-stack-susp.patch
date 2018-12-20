@@ -1,0 +1,208 @@
+From 617acc94aebca9226f43b0065126007a70948ec7 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Wed, 25 Oct 2017 11:12:00 -0500
+Subject: [PATCH 30/57] Support PAUSED state for heat stack-suspend of VMs
+
+Support PAUSED state for heat stack-suspend of VMs
+
+When we issue a suspend to nova, it sets the VM in PAUSED state rather than SUSPENDED.
+This fix makes the heat state machine check for and support that new PAUSED state.
+
+Notes:
+1) suspend is not available through the heat CLI
+2) suspend is not available through the openstack CLI prior to R4
+3) Attempting to suspend a stack that has VMs in ERROR state will fail the SUSPEND.
+
+better interactions between action-check and action-suspend
+
+This fixes the following scenario:
+  heat action-suspend <stack_name>
+  heat action-check <stack_name>   (this would have failed the check because the VM is paused)
+  heat action-resume <stack_name>  (this would have failed the resume because the stack is in error state from the failed check)
+---
+ heat/engine/clients/os/nova.py                 |  1 +
+ heat/engine/resource.py                        |  2 ++
+ heat/engine/resources/aws/ec2/instance.py      |  8 +++++---
+ heat/engine/resources/openstack/nova/server.py | 14 ++++++++++----
+ heat/tests/aws/test_instance.py                |  4 ++--
+ heat/tests/openstack/nova/test_server.py       |  8 ++++----
+ heat/tests/test_resource.py                    |  1 +
+ 7 files changed, 25 insertions(+), 13 deletions(-)
+
+diff --git a/heat/engine/clients/os/nova.py b/heat/engine/clients/os/nova.py
+index 67240ca..e84d1cf 100644
+--- a/heat/engine/clients/os/nova.py
++++ b/heat/engine/clients/os/nova.py
+@@ -56,6 +56,7 @@ class NovaClientPlugin(client_plugin.ClientPlugin):
+                                 'REVERT_RESIZE',
+                                 'SHUTOFF',
+                                 'SUSPENDED',
++                                'PAUSED',
+                                 'VERIFY_RESIZE']
+ 
+     exceptions_module = exceptions
+diff --git a/heat/engine/resource.py b/heat/engine/resource.py
+index 1fb3a82..9e12242 100644
+--- a/heat/engine/resource.py
++++ b/heat/engine/resource.py
+@@ -1668,7 +1668,9 @@ class Resource(status.ResourceStatus):
+         # Allow resume a resource if it's SUSPEND_COMPLETE
+         # or RESUME_FAILED or RESUME_COMPLETE. Recommend to check
+         # the real state of physical resource in handle_resume()
++        # Allow resume if a successful CHECK was invoked
+         if self.state not in ((self.SUSPEND, self.COMPLETE),
++                              (self.CHECK, self.COMPLETE),
+                               (self.RESUME, self.FAILED),
+                               (self.RESUME, self.COMPLETE)):
+             exc = exception.Error(_('State %s invalid for resume')
+diff --git a/heat/engine/resources/aws/ec2/instance.py b/heat/engine/resources/aws/ec2/instance.py
+index 66d255e..48444b0 100644
+--- a/heat/engine/resources/aws/ec2/instance.py
++++ b/heat/engine/resources/aws/ec2/instance.py
+@@ -840,6 +840,7 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
+         Note we do not wait for the SUSPENDED state, this is polled for by
+         check_suspend_complete in a similar way to the create logic so we can
+         take advantage of coroutines.
++        WRS changed SUSPENDED to PAUSED
+         """
+         if self.resource_id is None:
+             raise exception.Error(_('Cannot suspend %s, resource_id not set') %
+@@ -856,8 +857,8 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
+         else:
+             # if the instance has been suspended successful,
+             # no need to suspend again
+-            if self.client_plugin().get_status(server) != 'SUSPENDED':
+-                LOG.debug("suspending instance %s", self.resource_id)
++            if self.client_plugin().get_status(server) != 'PAUSED':
++                LOG.debug("suspending instance %s" % self.resource_id)
+                 server.suspend()
+             return server.id
+ 
+@@ -869,8 +870,9 @@ class Instance(resource.Resource, sh.SchedulerHintsMixin):
+         status = cp.get_status(server)
+         LOG.debug('%(name)s check_suspend_complete status = %(status)s',
+                   {'name': self.name, 'status': status})
++        # WRS changed SUSPENDED to PAUSED
+         if status in list(cp.deferred_server_statuses + ['ACTIVE']):
+-            return status == 'SUSPENDED'
++            return status == 'PAUSED'
+         else:
+             exc = exception.ResourceUnknownStatus(
+                 result=_('Suspend of instance %s failed') % server.name,
+diff --git a/heat/engine/resources/openstack/nova/server.py b/heat/engine/resources/openstack/nova/server.py
+index 8efa2a0..4d02c30 100644
+--- a/heat/engine/resources/openstack/nova/server.py
++++ b/heat/engine/resources/openstack/nova/server.py
+@@ -926,7 +926,10 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+     def handle_check(self):
+         server = self.client().servers.get(self.resource_id)
+         status = self.client_plugin().get_status(server)
+-        checks = [{'attr': 'status', 'expected': 'ACTIVE', 'current': status}]
++        # If the stack has been suspended, the expected attribute is PAUSED
++        # We cannot use the self.state since check may be invoked repeatedly
++        statuses = ['ACTIVE', 'PAUSED']
++        checks = [{'attr': 'status', 'expected': statuses, 'current': status}]
+         self._verify_check_conditions(checks)
+ 
+     def get_live_resource_data(self):
+@@ -1748,6 +1751,7 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+         Note we do not wait for the SUSPENDED state, this is polled for by
+         check_suspend_complete in a similar way to the create logic so we can
+         take advantage of coroutines.
++        WRS changed SUSPENDED to PAUSED.
+         """
+         if self.resource_id is None:
+             raise exception.Error(_('Cannot suspend %s, resource_id not set') %
+@@ -1764,8 +1768,9 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+         else:
+             # if the server has been suspended successful,
+             # no need to suspend again
+-            if self.client_plugin().get_status(server) != 'SUSPENDED':
+-                LOG.debug('suspending server %s', self.resource_id)
++            # WRS converted SUSPENDED to PAUSED
++            if self.client_plugin().get_status(server) != 'PAUSED':
++                LOG.debug('suspending server %s' % self.resource_id)
+                 server.suspend()
+             return server.id
+ 
+@@ -1777,8 +1782,9 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+         status = cp.get_status(server)
+         LOG.debug('%(name)s check_suspend_complete status = %(status)s',
+                   {'name': self.name, 'status': status})
++        # WRS converted SUSPENDED to PAUSED
+         if status in list(cp.deferred_server_statuses + ['ACTIVE']):
+-            return status == 'SUSPENDED'
++            return status == 'PAUSED'
+         else:
+             exc = exception.ResourceUnknownStatus(
+                 result=_('Suspend of server %s failed') % server.name,
+diff --git a/heat/tests/aws/test_instance.py b/heat/tests/aws/test_instance.py
+index 951fbdd..fee7d5e 100644
+--- a/heat/tests/aws/test_instance.py
++++ b/heat/tests/aws/test_instance.py
+@@ -1220,7 +1220,7 @@ class InstancesTest(common.HeatTestCase):
+         d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+         d2 = copy.deepcopy(d1)
+         d1['server']['status'] = 'ACTIVE'
+-        d2['server']['status'] = 'SUSPENDED'
++        d2['server']['status'] = 'PAUSED'
+         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+         get = self.fc.client.get_servers_1234
+         get().AndReturn((200, d1))
+@@ -1257,7 +1257,7 @@ class InstancesTest(common.HeatTestCase):
+ 
+         d1 = {'server': self.fc.client.get_servers_detail()[1]['servers'][0]}
+         d2 = copy.deepcopy(d1)
+-        d1['server']['status'] = 'SUSPENDED'
++        d1['server']['status'] = 'PAUSED'
+         d2['server']['status'] = 'ACTIVE'
+         self.m.StubOutWithMock(self.fc.client, 'get_servers_1234')
+         get = self.fc.client.get_servers_1234
+diff --git a/heat/tests/openstack/nova/test_server.py b/heat/tests/openstack/nova/test_server.py
+index 335e888..0ffa423 100644
+--- a/heat/tests/openstack/nova/test_server.py
++++ b/heat/tests/openstack/nova/test_server.py
+@@ -2508,7 +2508,7 @@ class ServersTest(common.HeatTestCase):
+         self.patchobject(self.fc.servers, 'get',
+                          side_effect=[set_status('ACTIVE'),
+                                       set_status('ACTIVE'),
+-                                      set_status('SUSPENDED')])
++                                      set_status('PAUSED')])
+ 
+         scheduler.TaskRunner(server.suspend)()
+         self.assertEqual((server.SUSPEND, server.COMPLETE), server.state)
+@@ -2563,8 +2563,8 @@ class ServersTest(common.HeatTestCase):
+ 
+         self.patchobject(return_server, 'resume')
+         self.patchobject(self.fc.servers, 'get',
+-                         side_effect=[set_status('SUSPENDED'),
+-                                      set_status('SUSPENDED'),
++                         side_effect=[set_status('PAUSED'),
++                                      set_status('PAUSED'),
+                                       set_status('ACTIVE')])
+ 
+         scheduler.TaskRunner(server.resume)()
+@@ -2642,7 +2642,7 @@ class ServersTest(common.HeatTestCase):
+         self._test_server_status_not_build_active('SHUTOFF')
+ 
+     def test_server_status_suspended(self):
+-        self._test_server_status_not_build_active('SUSPENDED')
++        self._test_server_status_not_build_active('PAUSED')
+ 
+     def test_server_status_verify_resize(self):
+         self._test_server_status_not_build_active('VERIFY_RESIZE')
+diff --git a/heat/tests/test_resource.py b/heat/tests/test_resource.py
+index 1955d01..6dae3c9 100644
+--- a/heat/tests/test_resource.py
++++ b/heat/tests/test_resource.py
+@@ -1567,6 +1567,7 @@ class ResourceTest(common.HeatTestCase):
+         invalid_states = [s for s in
+                           itertools.product(res.ACTIONS, res.STATUSES)
+                           if s not in ((res.SUSPEND, res.COMPLETE),
++                                       (res.CHECK, res.COMPLETE),
+                                        (res.RESUME, res.FAILED),
+                                        (res.RESUME, res.COMPLETE))]
+         for state in invalid_states:
+-- 
+2.7.4
+

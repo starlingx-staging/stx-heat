@@ -1,0 +1,94 @@
+From 8858cf68641fb7e0e884cef04357a239a270e920 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Wed, 25 Oct 2017 10:55:21 -0500
+Subject: [PATCH 28/57] Robustness improvements for stack update of nova server
+
+Two main changes
+1) If the server is missing (ie: deleted) it will be replaced by stack-update
+2) If the server is in ERROR / FAILED state  it will attempt an update, rather than defaulting to replace
+
+Note: a stack-update to change FLAVOR (ie: resize) will still be rejected if the VM is in ERROR state
+---
+ heat/engine/resources/openstack/nova/server.py | 38 +++++++++++++++++++++++++-
+ heat/tests/openstack/nova/test_server.py       |  2 ++
+ 2 files changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/heat/engine/resources/openstack/nova/server.py b/heat/engine/resources/openstack/nova/server.py
+index 6b47746..8efa2a0 100644
+--- a/heat/engine/resources/openstack/nova/server.py
++++ b/heat/engine/resources/openstack/nova/server.py
+@@ -1341,6 +1341,40 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+ 
+         return updaters
+ 
++    # detect if server deleted
++    def needs_replace(self, after_props):
++        """Mandatory replace for NotFound."""
++        try:
++            self.nova().servers.get(self.resource_id)
++        except Exception as ex:
++            if self.client_plugin().is_not_found(ex):
++                LOG.warning("Server Not Found %s" % str(self.resource_id))
++                return True
++            # Ignore other exceptions and behave like upstream code
++        return super(Server, self).needs_replace(after_props)
++
++    # Cloned from resource.py.  Allow REBUILD when FAILED
++    def _needs_update(self, after, before, after_props, before_props,
++                      prev_resource, check_init_complete=True):
++        if (self.stack.convergence and (
++                self.action, self.status) == (self.DELETE, self.COMPLETE)):
++            raise exception.UpdateReplace(self)
++
++        if check_init_complete and (self.action == self.INIT
++                                    and self.status == self.COMPLETE):
++            raise exception.UpdateReplace(self)
++
++        if self.needs_replace(after_props):
++            raise exception.UpdateReplace(self)
++
++        if before != after.freeze():
++            return True
++
++        try:
++            return before_props != after_props
++        except ValueError:
++            return True
++
+     def needs_replace_with_prop_diff(self, changed_properties_set,
+                                      after_props, before_props):
+         """Needs replace based on prop_diff."""
+@@ -1819,7 +1853,9 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+         if self.resource_id is None:
+             return
+ 
+-        self.prepare_ports_for_replace()
++        # allow replace if server deleted
++        with self.client_plugin().ignore_not_found:
++            self.prepare_ports_for_replace()
+ 
+     def restore_prev_rsrc(self, convergence=False):
+         self.restore_ports_after_rollback(convergence=convergence)
+diff --git a/heat/tests/openstack/nova/test_server.py b/heat/tests/openstack/nova/test_server.py
+index aaa456d..335e888 100644
+--- a/heat/tests/openstack/nova/test_server.py
++++ b/heat/tests/openstack/nova/test_server.py
+@@ -2060,6 +2060,7 @@ class ServersTest(common.HeatTestCase):
+             return_server.status = status
+             return return_server
+ 
++        self.patchobject(server, 'needs_replace', return_value=False)
+         self.patchobject(self.fc.servers, 'get',
+                          side_effect=[set_status('RESIZE'),
+                                       set_status('ERROR')])
+@@ -2423,6 +2424,7 @@ class ServersTest(common.HeatTestCase):
+             return_server.status = status
+             return return_server
+ 
++        self.patchobject(server, 'needs_replace', return_value=False)
+         self.patchobject(self.fc.servers, 'get',
+                          side_effect=[set_status('REBUILD'),
+                                       set_status('ERROR')])
+-- 
+2.7.4
+

@@ -1,0 +1,542 @@
+From 4b5a2437a6f965e67fbaf2c08db72e3acd0ea3dc Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 16:10:53 -0500
+Subject: [PATCH 18/57] Autoscaling fixes
+
+1) Fix for autoscaling in https mode
+
+Calculate the signed URL for heat-api-cfn from config for heat-api-cfn
+rather than the waitcondition_url
+This ensures that the signed URL of the ceilometer alarms will match the server
+processing those URLs
+
+2) Add support for VOTE during downscale
+Add vote support for downscaling nova servers
+
+This code will issue a vote to a server when a downscale request is issued.
+If the vote returns false, the downscale is blocked.
+Currently a vote is a "Stop" command.
+This also works for nested stacks.
+
+3) There was a logical bug in the aws autoscaling group code.  When the cooldown check passes, it
+resets the scaling flag.  Then an autoscale is meant to trigger, and the scaling flag should be cleared.
+An optimization introduced for CGTS 2657 broke that logic and could cause the clear to be skipped.
+This code re-orders the check.
+
+Retest scenario is to allow auto-scaling to run until it hits its MAX (or MIN).  Then have it attempt to scale the opposite direction.
+The old code would lock it at its MAX or MIN.
+
+4) There are several ways autoscaling can break during a swact. This fixes one of them.
+If a swact occurs after auto-scaling has been determined as valid, and the scaling_in_progress
+cooldown metadata has been set,  but before the scale completes and the cooldown period can be stored in the database
+then the autoscaling code would have forever been stalled.
+This fix adds a new config value   scaling_wait_time (default 15 minutes)  which allows autoscaling to auto-repair
+if the system gets into a broken state.
+Previously the only way to recover was to delete and recreate the stack.
+
+Note: Upstream already had code to prevent an autoscale to the same capacity. that code was not rebased to newton
+
+5) When accessing the password for admin, use keyring
+Note: this is likely not to be used since trusts are enabled by default
+
+6) Specify the user domain when password lookup for a user.   Unlikely to be used since trusts are now enabled.
+
+The root of the problem is that when autoscaling, a password authentication attempt is made using username
+This will fail in our environment unless  user_domain_name is also passed.
+The authentication failure does not manifest until a scale action occurs, since that is when the request context is reauthenticated using the stored credentials
+
+Access project_domain_name and user_domain_name at top level of config
+
+Unable to query these as part of trustee or other keystone auth config areas otherwise they will conflict with API calls
+This expects a top level  (DEFAULT) entry for them.  Only used by password creation when looking up user by name
+Required to enable TRUSTS support
+
+There was an extra %s which would impact the logs any time a WRS vote was issued to a server
+---
+ heat/common/config.py                              |  8 +++++++
+ heat/common/context.py                             | 21 +++++++++++++++++
+ heat/engine/clients/os/nova.py                     | 27 ++++++++++++++++++++++
+ heat/engine/resource.py                            |  4 ++++
+ .../resources/openstack/heat/instance_group.py     | 15 ++++++++++++
+ heat/engine/resources/openstack/nova/server.py     | 13 +++++++++++
+ heat/engine/resources/signal_responder.py          | 10 +++++++-
+ heat/engine/resources/template_resource.py         | 16 +++++++++++++
+ heat/scaling/cooldown.py                           | 27 ++++++++++++++++++----
+ heat/tests/autoscaling/test_heat_scaling_group.py  |  3 +++
+ heat/tests/autoscaling/test_scaling_group.py       |  3 +++
+ heat/tests/clients/test_heat_client.py             |  7 +++++-
+ heat/tests/test_auth_password.py                   | 15 ++++++++++++
+ requirements.txt                                   |  1 +
+ 14 files changed, 163 insertions(+), 7 deletions(-)
+
+diff --git a/heat/common/config.py b/heat/common/config.py
+index a9f8715..cf6fbaf 100644
+--- a/heat/common/config.py
++++ b/heat/common/config.py
+@@ -39,6 +39,12 @@ expirer_opts = [
+                default=30000,
+                help=_('Max number of events to keep.'))]
+ 
++cooldown_group = cfg.OptGroup('cooldown')
++cooldown_opts = [
++    cfg.IntOpt('scaling_wait_time',
++               default=900,
++               help=_('Wait time in seconds to clear scaling_in_progress'))]
++
+ service_opts = [
+     cfg.IntOpt('periodic_interval',
+                default=60,
+@@ -410,6 +416,7 @@ def list_opts():
+     yield volumes_group.name, volumes_opts
+     yield profiler.list_opts()[0]
+     yield expirer_group.name, expirer_opts
++    yield cooldown_group.name, cooldown_opts
+     yield 'clients', default_clients_opts
+ 
+     for client in ('aodh', 'barbican', 'ceilometer', 'cinder', 'designate',
+@@ -431,6 +438,7 @@ cfg.CONF.register_group(auth_password_group)
+ cfg.CONF.register_group(revision_group)
+ profiler.set_defaults(cfg.CONF)
+ cfg.CONF.register_group(expirer_group)
++cfg.CONF.register_group(cooldown_group)
+ 
+ for group, opts in list_opts():
+     cfg.CONF.register_opts(opts, group=group)
+diff --git a/heat/common/context.py b/heat/common/context.py
+index 974ee81..d3eafbc 100644
+--- a/heat/common/context.py
++++ b/heat/common/context.py
+@@ -10,6 +10,9 @@
+ #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
++import keyring
++
++from heat.common.i18n import _
+ 
+ from keystoneauth1 import access
+ from keystoneauth1.identity import access as access_plugin
+@@ -50,6 +53,17 @@ PASSWORD_PLUGIN = 'password'
+ TRUSTEE_CONF_GROUP = 'trustee'
+ ks_loading.register_auth_conf_options(cfg.CONF, TRUSTEE_CONF_GROUP)
+ 
++# Unable to query the keystone_authtoken config values so use trustee
++tis_domain_opts = [
++    cfg.StrOpt('user_domain_name',
++               default='Default',
++               help=_('keystone user domain name for scoping')),
++    cfg.StrOpt('project_domain_name',
++               default='Default',
++               help=_('keystone project domain name for scoping')),
++    ]
++cfg.CONF.register_opts(tis_domain_opts)
++
+ 
+ def list_opts():
+     trustee_opts = ks_loading.get_auth_common_conf_options()
+@@ -254,10 +268,16 @@ class RequestContext(context.RequestContext):
+                 auth_ref=access_info, auth_url=self.keystone_v3_endpoint)
+ 
+         if self.password:
++            # Never trust the password.  Refer to keyring
++            LOG.info("Re-determining password from keyring")
++            self.password = keyring.get_password('CGCS', self.username)
++            # user_domain_id is blank. Use user_domain_name to lookup user
++            user_domain_name = cfg.CONF.user_domain_name
+             return generic.Password(username=self.username,
+                                     password=self.password,
+                                     project_id=self.tenant_id,
+                                     user_domain_id=self.user_domain,
++                                    user_domain_name=user_domain_name,
+                                     auth_url=self.keystone_v3_endpoint)
+ 
+         if self.auth_token:
+@@ -270,6 +290,7 @@ class RequestContext(context.RequestContext):
+ 
+         LOG.error("Keystone API connection failed, no password "
+                   "trust or auth_token!")
++
+         raise exception.AuthorizationFailure()
+ 
+     def reload_auth_plugin(self):
+diff --git a/heat/engine/clients/os/nova.py b/heat/engine/clients/os/nova.py
+index 85e3609..bdd45b7 100644
+--- a/heat/engine/clients/os/nova.py
++++ b/heat/engine/clients/os/nova.py
+@@ -40,6 +40,10 @@ LOG = logging.getLogger(__name__)
+ 
+ CLIENT_NAME = 'nova'
+ 
++# Vote rejection return code and reason strings
++VOTE_CODE = 409
++VOTE_REJECT_MESSAGE = "action-rejected"
++
+ 
+ class NovaClientPlugin(client_plugin.ClientPlugin):
+ 
+@@ -430,6 +434,29 @@ echo -e '%s\tALL=(ALL)\tNOPASSWD: ALL' >> /etc/sudoers
+ 
+         return mime_blob.as_string()
+ 
++    def send_vote(self, server):
++        """Return True if this server passes the vote to be stopped"""
++        if not server:
++            return False
++        if server.status == 'ERROR':
++            return True
++        vote = True
++        try:
++            LOG.info("WRS sent stop")
++            server.stop()
++        except exceptions.ClientException as exc:
++            msg = getattr(exc, 'message', None)
++            details = getattr(exc, 'details', None)
++            if ((getattr(exc, 'http_status', None) == VOTE_CODE) and
++                    (msg == VOTE_REJECT_MESSAGE)):
++                vote = False
++                LOG.info('WRS vote rejecting stop for %s , reason=%s' %
++                         (str(server), str(details)))
++            else:
++                LOG.info("WRS vote accepted with exception: %s" % str(exc))
++
++        return vote
++
+     def stop_server(self, server_id):
+         """Wait for server to STOP from Nova."""
+         try:
+diff --git a/heat/engine/resource.py b/heat/engine/resource.py
+index 33b466c..1fb3a82 100644
+--- a/heat/engine/resource.py
++++ b/heat/engine/resource.py
+@@ -264,6 +264,10 @@ class Resource(status.ResourceStatus):
+                 self.id = node_data.primary_key
+                 self.uuid = node_data.uuid
+ 
++    def wrs_vote(self):
++        LOG.info("WRS downscale vote accepted for %s " % self.name)
++        return True
++
+     def rpc_client(self):
+         """Return a client for making engine RPC calls."""
+         if not self._rpc_client:
+diff --git a/heat/engine/resources/openstack/heat/instance_group.py b/heat/engine/resources/openstack/heat/instance_group.py
+index 34f5569..958449f 100644
+--- a/heat/engine/resources/openstack/heat/instance_group.py
++++ b/heat/engine/resources/openstack/heat/instance_group.py
+@@ -30,6 +30,10 @@ from heat.scaling import lbutils
+ from heat.scaling import rolling_update
+ from heat.scaling import template
+ 
++from oslo_log import log as logging
++
++
++LOG = logging.getLogger(__name__)
+ 
+ (SCALED_RESOURCE_TYPE,) = ('OS::Heat::ScaledResource',)
+ 
+@@ -262,6 +266,17 @@ class InstanceGroup(stack_resource.StackResource):
+         instance_definition = self._get_resource_definition()
+         old_resources = grouputils.get_member_definitions(self,
+                                                           include_failed=True)
++        # Detect a scale down.  Issue a vote
++        # If any vote is rejected, set new_resources to be same size as old
++        existing = grouputils.get_members(self)
++        if num_instances < len(existing):
++            LOG.info("WRS downscale detected, vote initiated")
++            for i in range(num_instances, len(existing)):
++                if existing[i].wrs_vote() is False:
++                    LOG.info("WRS downscale blocked by vote")
++                    num_instances = len(existing)
++                    break
++
+         definitions = list(template.member_definitions(
+             old_resources, instance_definition, num_instances, num_replace,
+             short_id.generate_id, delete_oldest=False))
+diff --git a/heat/engine/resources/openstack/nova/server.py b/heat/engine/resources/openstack/nova/server.py
+index 18f2160..3a402d5 100644
+--- a/heat/engine/resources/openstack/nova/server.py
++++ b/heat/engine/resources/openstack/nova/server.py
+@@ -781,6 +781,19 @@ class Server(server_base.BaseServer, sh.SchedulerHintsMixin,
+             self._register_access_key()
+         self.default_collectors = ['ec2']
+ 
++    def wrs_vote(self):
++        if self.resource_id is None:
++            return True
++        try:
++            server = self.nova().servers.get(self.resource_id)
++            vote = self.client_plugin().send_vote(server)
++            LOG.info("WRS server %s vote result: %s" % (self.name, str(vote)))
++        except Exception as e:
++            self.client_plugin().ignore_not_found(e)
++            LOG.warning("WRS server %s vote allowed" % self.name)
++            vote = True
++        return vote
++
+     def _config_drive(self):
+         # This method is overridden by the derived CloudServer resource
+         return self.properties[self.CONFIG_DRIVE]
+diff --git a/heat/engine/resources/signal_responder.py b/heat/engine/resources/signal_responder.py
+index f3a61ca..93b5e4c 100644
+--- a/heat/engine/resources/signal_responder.py
++++ b/heat/engine/resources/signal_responder.py
+@@ -144,7 +144,15 @@ class SignalResponder(stack_user.StackUser):
+ 
+         config_url = cfg.CONF.heat_waitcondition_server_url
+         if config_url:
+-            signal_url = config_url.replace('/waitcondition', signal_type)
++            # The autoscaling code in heat-api-cfn
++            # requires that the server which is running on
++            # http://internal_url:8000
++            # is the same as what is signed.
++            signal_url = "%s://%s:%s%s%s" % ("http",
++                                             cfg.CONF.heat_api_cfn.bind_host,
++                                             cfg.CONF.heat_api_cfn.bind_port,
++                                             "/v1",
++                                             signal_type)
+         else:
+             heat_client_plugin = self.stack.clients.client_plugin('heat')
+             endpoint = heat_client_plugin.get_heat_cfn_url()
+diff --git a/heat/engine/resources/template_resource.py b/heat/engine/resources/template_resource.py
+index 7ab803f..26c06f4 100644
+--- a/heat/engine/resources/template_resource.py
++++ b/heat/engine/resources/template_resource.py
+@@ -11,6 +11,8 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
++
++from oslo_log import log as logging
+ from oslo_serialization import jsonutils
+ from requests import exceptions
+ import six
+@@ -28,6 +30,8 @@ from heat.engine import template
+ from heat.rpc import api as rpc_api
+ 
+ 
++LOG = logging.getLogger(__name__)
++
+ REMOTE_SCHEMES = ('http', 'https')
+ LOCAL_SCHEMES = ('file',)
+ 
+@@ -323,6 +327,18 @@ class TemplateResource(stack_resource.StackResource):
+ 
+         return stack_identity.arn()
+ 
++    def wrs_vote(self):
++        LOG.info("WRS nested downscale vote initiated for %s " % self.name)
++        stack = self.nested()
++        if stack is None:
++            return True
++        vote = True
++        for res in stack.iter_resources(nested_depth=0):
++            vote = res.wrs_vote()
++            if vote is False:
++                break
++        return vote
++
+     def get_attribute(self, key, *path):
+         if self.resource_id is None:
+             return None
+diff --git a/heat/scaling/cooldown.py b/heat/scaling/cooldown.py
+index e372485..40b9b8d 100644
+--- a/heat/scaling/cooldown.py
++++ b/heat/scaling/cooldown.py
+@@ -16,12 +16,16 @@ from oslo_log import log as logging
+ from heat.common import exception
+ from heat.common.i18n import _
+ from heat.engine import resource
++from oslo_config import cfg
+ from oslo_utils import timeutils
+ import six
+ 
+ LOG = logging.getLogger(__name__)
+ 
+ 
++CONF = cfg.CONF
++
++
+ class CooldownMixin(object):
+     """Utility class to encapsulate Cooldown related logic.
+ 
+@@ -31,12 +35,24 @@ class CooldownMixin(object):
+     """
+     def _check_scaling_allowed(self):
+         metadata = self.metadata_get()
++        # If heat-engine is killed after setting scaling_in_progress
++        # and before clearing the flag, the cooldown is blocked forever.
++        # scaling_date provides a way of triggering a cleanup later
+         if metadata.get('scaling_in_progress'):
+-            LOG.info("Can not perform scaling action: resource %s "
+-                     "is already in scaling.", self.name)
+-            reason = _('due to scaling activity')
+-            raise resource.NoActionRequired(res_name=self.name,
+-                                            reason=reason)
++            sd = metadata.get('scaling_date', None)
++            if sd is None:
++                LOG.info("Can not perform scaling action: resource %s "
++                         "is already in scaling.", self.name)
++                reason = _('due to scaling activity')
++                raise resource.NoActionRequired(res_name=self.name,
++                                                reason=reason)
++            scale_max_time = CONF.cooldown.scaling_wait_time
++            if not timeutils.is_older_than(sd, scale_max_time):
++                LOG.info("Can not perform scaling action: resource %s "
++                         "is already in scaling.", self.name)
++                reason = _('due to scaling activity')
++                raise resource.NoActionRequired(res_name=self.name,
++                                                reason=reason)
+         try:
+             # Negative values don't make sense, so they are clamped to zero
+             cooldown = max(0, self.properties[self.COOLDOWN])
+@@ -61,6 +77,7 @@ class CooldownMixin(object):
+         # Assumes _finished_scaling is called
+         # after the scaling operation completes
+         metadata['scaling_in_progress'] = True
++        metadata['scaling_date'] = timeutils.utcnow().isoformat()
+         self.metadata_set(metadata)
+ 
+     def _cooldown_check(self, cooldown, last_adjust):
+diff --git a/heat/tests/autoscaling/test_heat_scaling_group.py b/heat/tests/autoscaling/test_heat_scaling_group.py
+index 5f913ad..df979c2 100644
+--- a/heat/tests/autoscaling/test_heat_scaling_group.py
++++ b/heat/tests/autoscaling/test_heat_scaling_group.py
+@@ -110,6 +110,9 @@ class TestGroupAdjust(common.HeatTestCase):
+         self.assertIsNone(self.group.validate())
+ 
+     def test_scaling_policy_cooldown_toosoon(self):
++        """If _is_scaling_allowed() returns False don't progress."""
++        # WRS will abort if size unchanged
++        # change get_size to resize to make test pass
+         dont_call = self.patchobject(self.group, 'resize')
+         self.patchobject(self.group, '_check_scaling_allowed',
+                          side_effect=resource.NoActionRequired)
+diff --git a/heat/tests/autoscaling/test_scaling_group.py b/heat/tests/autoscaling/test_scaling_group.py
+index 233cf50..4cc20ec 100644
+--- a/heat/tests/autoscaling/test_scaling_group.py
++++ b/heat/tests/autoscaling/test_scaling_group.py
+@@ -294,6 +294,9 @@ class TestGroupAdjust(common.HeatTestCase):
+         self.assertIsNone(self.group.validate())
+ 
+     def test_scaling_policy_cooldown_toosoon(self):
++        """If _is_scaling_allowed() returns False don't progress."""
++        # WRS will abort if size unchanged
++        # change get_size to resize to make test pass
+         dont_call = self.patchobject(self.group, 'resize')
+         self.patchobject(self.group, '_check_scaling_allowed',
+                          side_effect=resource.NoActionRequired)
+diff --git a/heat/tests/clients/test_heat_client.py b/heat/tests/clients/test_heat_client.py
+index 1c520c6..0584fd0 100644
+--- a/heat/tests/clients/test_heat_client.py
++++ b/heat/tests/clients/test_heat_client.py
+@@ -12,6 +12,7 @@
+ #    under the License.
+ 
+ import json
++import keyring
+ import uuid
+ 
+ from keystoneauth1 import access as ks_access
+@@ -48,6 +49,7 @@ class KeystoneClientTest(common.HeatTestCase):
+         self.mock_ks_v3_client = self.m.CreateMock(kc_v3.Client)
+         self.mock_ks_v3_client_domain_mngr = self.m.CreateMock(
+             kc_v3_domains.DomainManager)
++
+         self.m.StubOutWithMock(kc_v3, "Client")
+         self.m.StubOutWithMock(ks_auth, 'Password')
+         self.m.StubOutWithMock(ks_token_endpoint, 'Token')
+@@ -121,7 +123,11 @@ class KeystoneClientTest(common.HeatTestCase):
+                                  username='test_username',
+                                  password='password',
+                                  project_id=project_id or 'test_tenant_id',
++                                 user_domain_name='Default',
+                                  user_domain_id='adomain123')
++            self.m.StubOutWithMock(keyring, 'get_password')
++            keyring.get_password(mox.IgnoreArg(),
++                                 mox.IgnoreArg()).AndReturn('password')
+ 
+         elif method == 'trust':
+             p = ks_loading.load_auth_from_conf_options(cfg.CONF,
+@@ -636,7 +642,6 @@ class KeystoneClientTest(common.HeatTestCase):
+     def test_trust_init_fail(self):
+ 
+         """Test consuming a trust when initializing, error scoping."""
+-
+         self._stubs_auth(method='trust', trust_scoped=False)
+         cfg.CONF.set_override('deferred_auth_method', 'trusts')
+         self.m.ReplayAll()
+diff --git a/heat/tests/test_auth_password.py b/heat/tests/test_auth_password.py
+index 0768c36..3745bca 100644
+--- a/heat/tests/test_auth_password.py
++++ b/heat/tests/test_auth_password.py
+@@ -17,6 +17,8 @@
+ from keystoneauth1 import exceptions as keystone_exc
+ from keystoneauth1.identity import generic as ks_auth
+ from keystoneauth1 import session as ks_session
++
++import keyring
+ import mox
+ from oslo_config import cfg
+ import six
+@@ -109,11 +111,15 @@ class KeystonePasswordAuthProtocolTest(common.HeatTestCase):
+             password='goodpassword',
+             project_id='tenant_id1',
+             user_domain_id='domain1',
++            user_domain_name='Default',
+             username='user_name1').AndReturn(mock_auth)
+ 
+         m = mock_auth.get_access(mox.IsA(ks_session.Session))
+         m.AndReturn(FakeAccessInfo(**TOKEN_V2_RESPONSE))
+ 
++        self.m.StubOutWithMock(keyring, 'get_password')
++        keyring.get_password(mox.IgnoreArg(),
++                             mox.IgnoreArg()).AndReturn('goodpassword')
+         self.m.ReplayAll()
+         req = webob.Request.blank('/tenant_id1/')
+         req.headers['X_AUTH_USER'] = 'user_name1'
+@@ -131,11 +137,16 @@ class KeystonePasswordAuthProtocolTest(common.HeatTestCase):
+                          password='goodpassword',
+                          project_id='tenant_id1',
+                          user_domain_id='domain1',
++                         user_domain_name='Default',
+                          username='user_name1').AndReturn(mock_auth)
+ 
+         m = mock_auth.get_access(mox.IsA(ks_session.Session))
+         m.AndReturn(FakeAccessInfo(**TOKEN_V3_RESPONSE))
+ 
++        self.m.StubOutWithMock(keyring, 'get_password')
++        keyring.get_password(mox.IgnoreArg(),
++                             mox.IgnoreArg()).AndReturn('goodpassword')
++
+         self.m.ReplayAll()
+         req = webob.Request.blank('/tenant_id1/')
+         req.headers['X_AUTH_USER'] = 'user_name1'
+@@ -152,9 +163,13 @@ class KeystonePasswordAuthProtocolTest(common.HeatTestCase):
+                              password='badpassword',
+                              project_id='tenant_id1',
+                              user_domain_id='domain1',
++                             user_domain_name='Default',
+                              username='user_name1')
+         m.AndRaise(keystone_exc.Unauthorized(401))
+ 
++        self.m.StubOutWithMock(keyring, 'get_password')
++        keyring.get_password(mox.IgnoreArg(),
++                             mox.IgnoreArg()).AndReturn('badpassword')
+         self.m.ReplayAll()
+         req = webob.Request.blank('/tenant_id1/')
+         req.headers['X_AUTH_USER'] = 'user_name1'
+diff --git a/requirements.txt b/requirements.txt
+index 704fe9f..f0bf428 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -10,6 +10,7 @@ debtcollector>=1.2.0 # Apache-2.0
+ eventlet!=0.18.3,!=0.20.1,<0.21.0,>=0.18.2 # MIT
+ keystoneauth1>=3.1.0 # Apache-2.0
+ keystonemiddleware>=4.12.0 # Apache-2.0
++keyring>=5.3 # MIT
+ lxml!=3.7.0,>=2.3 # BSD
+ netaddr!=0.7.16,>=0.7.13 # BSD
+ openstacksdk>=0.9.17 # Apache-2.0
+-- 
+2.7.4
+

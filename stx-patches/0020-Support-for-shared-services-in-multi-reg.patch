@@ -1,0 +1,52 @@
+From 6e1172ce7ef99ce3cceb76707969fa7290c44214 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 17:07:41 -0500
+Subject: [PATCH 20/57] Support for shared services in multi region mode
+
+The services are declared in a list in config.
+shared_services_types=image, volume, volumev2
+---
+ heat/common/config.py                |  5 +++++
+ heat/engine/clients/client_plugin.py | 10 +++++++++-
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/heat/common/config.py b/heat/common/config.py
+index cf6fbaf..3ad7b88 100644
+--- a/heat/common/config.py
++++ b/heat/common/config.py
+@@ -68,6 +68,11 @@ service_opts = [
+                       'SSL is used.')),
+     cfg.StrOpt('region_name_for_services',
+                help=_('Default region name used to get services endpoints.')),
++    cfg.StrOpt('region_name_for_shared_services',
++               help=_('Default region name for shared services endpoints.')),
++    cfg.ListOpt('shared_services_types',
++                default=['image', 'volume', 'volumev2'],
++                help=_('The shared services located in the other region.')),
+     cfg.StrOpt('heat_stack_user_role',
+                default="heat_stack_user",
+                help=_('Keystone role for heat template-defined users.')),
+diff --git a/heat/engine/clients/client_plugin.py b/heat/engine/clients/client_plugin.py
+index ab737da..62263e9 100644
+--- a/heat/engine/clients/client_plugin.py
++++ b/heat/engine/clients/client_plugin.py
+@@ -88,7 +88,15 @@ class ClientPlugin(object):
+         pass
+ 
+     def _get_region_name(self):
+-        return self.context.region_name or cfg.CONF.region_name_for_services
++        reg = self.context.region_name or cfg.CONF.region_name_for_services
++        # If Shared Services configured, override region for image/volumes
++        shared_services_region_name = cfg.CONF.region_name_for_shared_services
++        shared_services_types = cfg.CONF.shared_services_types
++        # Newton declares service_types = ['something'] per client
++        if shared_services_region_name:
++            if self.service_types in shared_services_types:
++                reg = shared_services_region_name
++        return reg
+ 
+     def url_for(self, **kwargs):
+         keystone_session = self.context.keystone_session
+-- 
+2.7.4
+

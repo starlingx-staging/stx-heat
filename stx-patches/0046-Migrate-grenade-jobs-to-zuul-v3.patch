@@ -1,0 +1,154 @@
+From 185be951cf8906c3ace15247f69dc8740b6886e8 Mon Sep 17 00:00:00 2001
+From: ricolin <rico.lin@easystack.cn>
+Date: Tue, 3 Oct 2017 17:07:51 +0800
+Subject: [PATCH 46/57] Migrate grenade jobs to zuul v3
+
+Needed-By: Ie080d74e54850f2d892b23ebd5e0412b0d139199
+Change-Id: I02edcec5b464fc294dd87e1a4e1ef8e0d50592bc
+(cherry picked from commit 0b572b39e4298a17f0e02177d840309894fd64c3)
+---
+ .zuul.yaml                                       | 40 +++++++++++++++++
+ playbooks/devstack/grenade/run.yaml              | 57 ++++++++++++++++++++++++
+ playbooks/devstack/multinode-networking/pre.yaml |  3 ++
+ 3 files changed, 100 insertions(+)
+ create mode 100644 playbooks/devstack/grenade/run.yaml
+ create mode 100644 playbooks/devstack/multinode-networking/pre.yaml
+
+diff --git a/.zuul.yaml b/.zuul.yaml
+index 5ac05a0..b7b6180 100644
+--- a/.zuul.yaml
++++ b/.zuul.yaml
+@@ -75,10 +75,46 @@
+     vars:
+       use_identity_v3_only: 1
+ 
++- job:
++    name: grenade-heat
++    parent: legacy-dsvm-base
++    run: playbooks/devstack/grenade/run.yaml
++    post-run: playbooks/devstack/functional/post.yaml
++    timeout: 7800
++    branches: ^(?!(driverfixes|stable/(mitaka|newton))).*$
++    required-projects:
++      - openstack-dev/grenade
++      - openstack-infra/devstack-gate
++      - openstack/heat
++    irrelevant-files:
++      - ^(test-|)requirements.txt$
++      - ^.*\.rst$
++      - ^api-ref/.*$
++      - ^doc/.*$
++      - ^heat/locale/.*$
++      - ^heat/tests/.*$
++      - ^releasenotes/.*$
++      - ^setup.cfg$
++    vars:
++      topology: aio
++      branch_override: default
++
++- job:
++    name: grenade-heat-multinode
++    parent: grenade-heat
++    nodeset: ubuntu-xenial-2-node
++    roles:
++      - zuul: openstack-infra/zuul-jobs
++    pre-run: playbooks/devstack/multinode-networking/pre
++    voting: false
++    vars:
++      topology: multinode
++
+ - project:
+     name: openstack/heat
+     check:
+       jobs:
++        - grenade-heat
+         - heat-functional-orig-mysql-lbaasv2
+         - heat-functional-convg-mysql-lbaasv2
+         - heat-functional-convg-mysql-lbaasv2-amqp1
+@@ -87,7 +123,11 @@
+         - heat-functional-convg-mysql-lbaasv2-identity-v3-only
+     gate:
+       jobs:
++        - grenade-heat
+         - heat-functional-orig-mysql-lbaasv2
+         - heat-functional-convg-mysql-lbaasv2
+         - heat-functional-convg-mysql-lbaasv2-non-apache
+         - heat-functional-convg-mysql-lbaasv2-py35
++    experimental:
++      jobs:
++        - grenade-heat-multinode
+diff --git a/playbooks/devstack/grenade/run.yaml b/playbooks/devstack/grenade/run.yaml
+new file mode 100644
+index 0000000..e254603
+--- /dev/null
++++ b/playbooks/devstack/grenade/run.yaml
+@@ -0,0 +1,57 @@
++- hosts: primary
++  name: job for grenade-heat
++  tasks:
++
++    - name: Ensure legacy workspace directory
++      file:
++        path: '{{ ansible_user_dir }}/workspace'
++        state: directory
++
++    - shell:
++        cmd: |
++          set -e
++          set -x
++          cat > clonemap.yaml << EOF
++          clonemap:
++            - name: openstack-infra/devstack-gate
++              dest: devstack-gate
++          EOF
++          /usr/zuul-env/bin/zuul-cloner -m clonemap.yaml --cache-dir /opt/git \
++              git://git.openstack.org \
++              openstack-infra/devstack-gate
++        executable: /bin/bash
++        chdir: '{{ ansible_user_dir }}/workspace'
++      environment: '{{ zuul | zuul_legacy_vars }}'
++
++    - shell:
++        cmd: |
++          set -e
++          set -x
++          cat << 'EOF' >>"/tmp/dg-local.conf"
++          [[local|localrc]]
++          enable_plugin heat git://git.openstack.org/openstack/heat
++          EOF
++        executable: /bin/bash
++        chdir: '{{ ansible_user_dir }}/workspace'
++      environment: '{{ zuul | zuul_legacy_vars }}'
++
++    - shell:
++        cmd: |
++          set -e
++          set -x
++          export PROJECTS="openstack-dev/grenade $PROJECTS"
++          export PYTHONUNBUFFERED=true
++          export GRENADE_PLUGINRC="enable_grenade_plugin heat https://git.openstack.org/openstack/heat"
++          export DEVSTACK_GATE_NEUTRON=1
++          export DEVSTACK_GATE_TEMPEST=1
++          export DEVSTACK_GATE_TEMPEST_NOTESTS=1
++          export DEVSTACK_GATE_GRENADE=pullup
++          if [ "{{ branch_override }}" != "default" ] ; then
++              export OVERRIDE_ZUUL_BRANCH=$BRANCH_OVERRIDE
++          fi
++          export DEVSTACK_GATE_TOPOLOGY="{{ topology }}"
++          cp devstack-gate/devstack-vm-gate-wrap.sh ./safe-devstack-vm-gate-wrap.sh
++          ./safe-devstack-vm-gate-wrap.sh
++        executable: /bin/bash
++        chdir: '{{ ansible_user_dir }}/workspace'
++      environment: '{{ zuul | zuul_legacy_vars }}'
+diff --git a/playbooks/devstack/multinode-networking/pre.yaml b/playbooks/devstack/multinode-networking/pre.yaml
+new file mode 100644
+index 0000000..3d29085
+--- /dev/null
++++ b/playbooks/devstack/multinode-networking/pre.yaml
+@@ -0,0 +1,3 @@
++- hosts: all
++  roles:
++    - multi-node-firewall
+-- 
+2.7.4
+

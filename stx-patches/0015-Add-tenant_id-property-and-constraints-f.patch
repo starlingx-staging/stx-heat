@@ -1,0 +1,290 @@
+From ea7c963bd48550dfa481abac9cb0d741eb2608be Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 15:35:36 -0500
+Subject: [PATCH 15/57] Add tenant_id property and constraints for neutron Router,net,subnet
+
+The "tenant_id" property has been added to the neutron router resource so that
+a router can be created by an admin on behalf of tenant.
+
+Possible Upstream Submission.  Support TENANT_ID for neutron net,subnet, router to be a NAME
+
+This code invokes a Heat translation rule to auto-convert TENANT_ID value to a UUID if it is a NAME
+Note: In Keystone V3  TENANT_ID means a PROJECT_ID.
+The underlying neutron calls still require a UUID, this just makes the HEAT template code simpler and less error prone.
+
+Tox tests updated.
+Sample templates can also be simplified and make use of default values for tenant names
+
+Add support for FIXED_IP which existed in R2
+
+Upstream heat has a more comprehensive way of specifiying fixed_ip addresses for a router.
+We still need to add back in the hidden option that existed in R2.
+Otherwise R2 templates that used that mechanism will stop working.
+
+Register the keystone.tenant constraint for R2 template update support
+
+keystone.tenant is the same as keystone.project
+Only needed to support R2 example templates that reference the older constraint
+---
+ heat/engine/resources/openstack/neutron/net.py     | 15 +++++++-
+ heat/engine/resources/openstack/neutron/router.py  | 45 +++++++++++++++++++++-
+ heat/engine/resources/openstack/neutron/subnet.py  |  9 ++++-
+ heat/tests/openstack/neutron/test_neutron_net.py   |  6 +++
+ .../tests/openstack/neutron/test_neutron_router.py |  5 +++
+ .../tests/openstack/neutron/test_neutron_subnet.py |  7 ++++
+ setup.cfg                                          |  1 +
+ 7 files changed, 84 insertions(+), 4 deletions(-)
+
+diff --git a/heat/engine/resources/openstack/neutron/net.py b/heat/engine/resources/openstack/neutron/net.py
+index 00f61b0..f025cfa 100644
+--- a/heat/engine/resources/openstack/neutron/net.py
++++ b/heat/engine/resources/openstack/neutron/net.py
+@@ -73,7 +73,10 @@ class Net(neutron.NeutronResource):
+             properties.Schema.STRING,
+             _('The ID of the tenant which will own the network. Only '
+               'administrative users can set the tenant identifier; this '
+-              'cannot be changed using authorization policies.')
++              'cannot be changed using authorization policies.'),
++            constraints=[
++                constraints.CustomConstraint('keystone.project')
++            ],
+         ),
+         SHARED: properties.Schema(
+             properties.Schema.BOOLEAN,
+@@ -169,13 +172,21 @@ class Net(neutron.NeutronResource):
+         ),
+     }
+ 
++    # Translate TENANT_ID from a NAME to a UUID
+     def translation_rules(self, properties):
+         return [translation.TranslationRule(
+             properties,
+             translation.TranslationRule.RESOLVE,
+             [self.QOS_POLICY],
+             client_plugin=self.client_plugin(),
+-            finder='get_qos_policy_id')]
++            finder='get_qos_policy_id'),
++            translation.TranslationRule(
++                properties,
++                translation.TranslationRule.RESOLVE,
++                [self.TENANT_ID],
++                client_plugin=self.client_plugin('keystone'),
++                finder='get_project_id'),
++        ]
+ 
+     def handle_create(self):
+         props = self.prepare_properties(
+diff --git a/heat/engine/resources/openstack/neutron/router.py b/heat/engine/resources/openstack/neutron/router.py
+index aa6d2fc..4b5e099 100644
+--- a/heat/engine/resources/openstack/neutron/router.py
++++ b/heat/engine/resources/openstack/neutron/router.py
+@@ -10,6 +10,13 @@
+ #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
++#
++# Copyright (c) 2015-2017 Wind River Systems, Inc.
++#
++#
++#
++#
++#
+ 
+ import six
+ 
+@@ -38,16 +45,20 @@ class Router(neutron.NeutronResource):
+     PROPERTIES = (
+         NAME, EXTERNAL_GATEWAY, VALUE_SPECS, ADMIN_STATE_UP,
+         L3_AGENT_ID, L3_AGENT_IDS, DISTRIBUTED, HA, TAGS,
++        TENANT_ID,
+     ) = (
+         'name', 'external_gateway_info', 'value_specs', 'admin_state_up',
+         'l3_agent_id', 'l3_agent_ids', 'distributed', 'ha', 'tags',
++        'tenant_id',
+     )
+ 
+     _EXTERNAL_GATEWAY_KEYS = (
+         EXTERNAL_GATEWAY_NETWORK, EXTERNAL_GATEWAY_ENABLE_SNAT,
+         EXTERNAL_GATEWAY_FIXED_IPS,
++        FIXED_IP,
+     ) = (
+         'network', 'enable_snat', 'external_fixed_ips',
++        'fixed_ip',
+     )
+ 
+     _EXTERNAL_GATEWAY_FIXED_IPS_KEYS = (
+@@ -87,6 +98,21 @@ class Router(neutron.NeutronResource):
+                       'this property to administrative users only.'),
+                     update_allowed=True
+                 ),
++                # fixed_ip added in R2 and deprecated in R3
++                FIXED_IP: properties.Schema(
++                    properties.Schema.STRING,
++                    _('External fixed IP Address.'),
++                    update_allowed=True,
++                    support_status=support.SupportStatus(
++                        status=support.HIDDEN,
++                        version='5.0.0',
++                        message=_('Use %s.') % EXTERNAL_GATEWAY_FIXED_IPS,
++                        previous_status=support.SupportStatus(
++                            status=support.DEPRECATED,
++                            version='2014.2'
++                        )
++                    ),
++                ),
+                 EXTERNAL_GATEWAY_FIXED_IPS: properties.Schema(
+                     properties.Schema.LIST,
+                     _('External fixed IP addresses for the gateway.'),
+@@ -180,6 +206,14 @@ class Router(neutron.NeutronResource):
+             update_allowed=True,
+             support_status=support.SupportStatus(version='9.0.0')
+         ),
++        TENANT_ID: properties.Schema(
++            properties.Schema.STRING,
++            _('The ID of the tenant who owns the router. Only administrative '
++              'users can specify a tenant ID other than their own.'),
++            constraints=[
++                constraints.CustomConstraint('keystone.project')
++            ],
++        ),
+     }
+ 
+     attributes_schema = {
+@@ -221,7 +255,13 @@ class Router(neutron.NeutronResource):
+                  self.SUBNET],
+                 client_plugin=self.client_plugin(),
+                 finder='find_resourceid_by_name_or_id',
+-                entity='subnet')
++                entity='subnet'),
++            translation.TranslationRule(
++                props,
++                translation.TranslationRule.RESOLVE,
++                [self.TENANT_ID],
++                client_plugin=self.client_plugin('keystone'),
++                finder='get_project_id'),
+             ]
+         if props.get(self.L3_AGENT_ID):
+             rules.extend([
+@@ -273,6 +313,9 @@ class Router(neutron.NeutronResource):
+         gateway = props.get(self.EXTERNAL_GATEWAY)
+         if gateway:
+             gateway['network_id'] = gateway.pop(self.EXTERNAL_GATEWAY_NETWORK)
++            # FIXED_IP was a R2 feature, remove if blank
++            if gateway[self.FIXED_IP] is None:
++                del gateway[self.FIXED_IP]
+             if gateway[self.EXTERNAL_GATEWAY_ENABLE_SNAT] is None:
+                 del gateway[self.EXTERNAL_GATEWAY_ENABLE_SNAT]
+             if gateway[self.EXTERNAL_GATEWAY_FIXED_IPS] is None:
+diff --git a/heat/engine/resources/openstack/neutron/subnet.py b/heat/engine/resources/openstack/neutron/subnet.py
+index 26a8f96..1674128 100644
+--- a/heat/engine/resources/openstack/neutron/subnet.py
++++ b/heat/engine/resources/openstack/neutron/subnet.py
+@@ -325,7 +325,14 @@ class Subnet(neutron.NeutronResource):
+                 [self.SEGMENT],
+                 client_plugin=self.client_plugin('openstack'),
+                 finder='find_network_segment'
+-            )
++            ),
++            translation.TranslationRule(
++                props,
++                translation.TranslationRule.RESOLVE,
++                [self.TENANT_ID],
++                client_plugin=self.client_plugin('keystone'),
++                finder='get_project_id'
++            ),
+         ]
+ 
+     @classmethod
+diff --git a/heat/tests/openstack/neutron/test_neutron_net.py b/heat/tests/openstack/neutron/test_neutron_net.py
+index 7b90a52..9018089 100644
+--- a/heat/tests/openstack/neutron/test_neutron_net.py
++++ b/heat/tests/openstack/neutron/test_neutron_net.py
+@@ -18,6 +18,7 @@ from neutronclient.v2_0 import client as neutronclient
+ 
+ from heat.common import exception
+ from heat.common import template_format
++from heat.engine.clients.os import keystone
+ from heat.engine.clients.os import neutron
+ from heat.engine.resources.openstack.neutron import net
+ from heat.engine import rsrc_defn
+@@ -87,6 +88,11 @@ class NeutronNetTest(common.HeatTestCase):
+         self.patchobject(neutron.NeutronClientPlugin, 'has_extension',
+                          return_value=True)
+ 
++        def keystone_side_effect(value):
++            return value
++        self.patchobject(keystone.KeystoneClientPlugin, 'get_project_id',
++                         side_effect=keystone_side_effect)
++
+     def create_net(self, t, stack, resource_name):
+         resource_defns = stack.t.resource_definitions(stack)
+         rsrc = net.Net('test_net', resource_defns[resource_name], stack)
+diff --git a/heat/tests/openstack/neutron/test_neutron_router.py b/heat/tests/openstack/neutron/test_neutron_router.py
+index 64ad1a4..76563ac 100644
+--- a/heat/tests/openstack/neutron/test_neutron_router.py
++++ b/heat/tests/openstack/neutron/test_neutron_router.py
+@@ -58,6 +58,7 @@ resources:
+   router:
+     type: OS::Neutron::Router
+     properties:
++      tenant_id: admin
+       l3_agent_id: 792ff887-6c85-4a56-b518-23f24fa65581
+ '''
+ 
+@@ -183,12 +184,16 @@ class NeutronRouterTest(common.HeatTestCase):
+         return rsrc
+ 
+     def test_router_hidden_property_translation(self):
++        # adding tenant_id to this template.  Keystone project constraint
++        self.stub_KeystoneProjectConstraint()
++
+         t = template_format.parse(hidden_property_router_template)
+         stack = utils.parse_stack(t)
+         rsrc = stack['router']
+         self.assertIsNone(rsrc.properties['l3_agent_id'])
+         self.assertEqual([u'792ff887-6c85-4a56-b518-23f24fa65581'],
+                          rsrc.properties['l3_agent_ids'])
++        rsrc.validate
+ 
+     def test_router_validate_distribute_l3_agents(self):
+         t = template_format.parse(neutron_template)
+diff --git a/heat/tests/openstack/neutron/test_neutron_subnet.py b/heat/tests/openstack/neutron/test_neutron_subnet.py
+index da96954..b32f9b3 100644
+--- a/heat/tests/openstack/neutron/test_neutron_subnet.py
++++ b/heat/tests/openstack/neutron/test_neutron_subnet.py
+@@ -20,6 +20,7 @@ import six
+ 
+ from heat.common import exception
+ from heat.common import template_format
++from heat.engine.clients.os import keystone
+ from heat.engine.clients.os import neutron
+ from heat.engine.clients.os import openstacksdk
+ from heat.engine.hot import functions as hot_funcs
+@@ -122,6 +123,12 @@ class NeutronSubnetTest(common.HeatTestCase):
+         self.patchobject(neutronV20, 'find_resourceid_by_name_or_id',
+                          return_value='fc68ea2c-b60b-4b4f-bd82-94ec81110766')
+ 
++        def keystone_side_effect(value):
++            return value
++
++        self.patchobject(keystone.KeystoneClientPlugin, 'get_project_id',
++                         side_effect=keystone_side_effect)
++
+     def create_subnet(self, t, stack, resource_name):
+         resource_defns = stack.t.resource_definitions(stack)
+         rsrc = subnet.Subnet('test_subnet', resource_defns[resource_name],
+diff --git a/setup.cfg b/setup.cfg
+index 2c07ded..5ab067c 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -107,6 +107,7 @@ heat.constraints =
+     heat.resource_type = heat.engine.constraint.heat_constraints:ResourceTypeConstraint
+     keystone.domain = heat.engine.clients.os.keystone.keystone_constraints:KeystoneDomainConstraint
+     keystone.group = heat.engine.clients.os.keystone.keystone_constraints:KeystoneGroupConstraint
++    keystone.tenant = heat.engine.clients.os.keystone.keystone_constraints:KeystoneProjectConstraint
+     keystone.project = heat.engine.clients.os.keystone.keystone_constraints:KeystoneProjectConstraint
+     keystone.region = heat.engine.clients.os.keystone.keystone_constraints:KeystoneRegionConstraint
+     keystone.role = heat.engine.clients.os.keystone.keystone_constraints:KeystoneRoleConstraint
+-- 
+2.7.4
+

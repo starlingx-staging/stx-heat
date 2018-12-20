@@ -1,0 +1,29 @@
+From ab98641ce666c1f5c46cf7b96c3f3c5516f3d616 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:47:21 -0500
+Subject: [PATCH 09/57] Support UNKNOWN port status for SRIOV ports
+
+If you can create a port of type UNKNOWN such as SRIOV or PCI Passthrough
+then HEAT will accept it as being successfully built.
+Related to: CGTS 2092
+Note:  No associated TOX tests.
+---
+ heat/engine/resources/openstack/neutron/neutron.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/heat/engine/resources/openstack/neutron/neutron.py b/heat/engine/resources/openstack/neutron/neutron.py
+index f62e99b..bf8bdcd 100644
+--- a/heat/engine/resources/openstack/neutron/neutron.py
++++ b/heat/engine/resources/openstack/neutron/neutron.py
+@@ -112,7 +112,7 @@ class NeutronResource(resource.Resource):
+         status = attributes['status']
+         if status == 'BUILD':
+             return False
+-        if status in ('ACTIVE', 'DOWN'):
++        if status in ('ACTIVE', 'DOWN', 'UNKNOWN'):
+             return True
+         elif status in ('ERROR', 'DEGRADED'):
+             raise exception.ResourceInError(
+-- 
+2.7.4
+

@@ -1,0 +1,112 @@
+From c2e67b1708f8083941e1e2c1e41780f19b04f401 Mon Sep 17 00:00:00 2001
+From: Al Bailey <al.bailey@windriver.com>
+Date: Tue, 24 Oct 2017 14:47:46 -0500
+Subject: [PATCH 11/57] Add heat-manage expire_events
+
+Add a heat-manage expire_events action to remove older heat events
+
+Current default is 30000
+To change to 100 this would be the entry in  heat.conf
+[expirer]
+max_events=100
+---
+ heat/cmd/manage.py        |  9 +++++++++
+ heat/common/config.py     |  7 +++++++
+ heat/db/sqlalchemy/api.py | 15 +++++++++++++++
+ 3 files changed, 31 insertions(+)
+
+diff --git a/heat/cmd/manage.py b/heat/cmd/manage.py
+index 2e5d38c..c6beafc 100644
+--- a/heat/cmd/manage.py
++++ b/heat/cmd/manage.py
+@@ -128,6 +128,11 @@ def do_migrate():
+                           "in COMPLETE state in order to be migrated."))
+ 
+ 
++def expire_events():
++    if CONF.expirer.max_events > 0:
++        db_api.expire_events(CONF.expirer.max_events)
++
++
+ def purge_deleted():
+     """Remove database records that have been previously soft deleted."""
+     db_api.purge_deleted(CONF.command.age,
+@@ -169,6 +174,10 @@ def add_command_parsers(subparsers):
+     parser.set_defaults(func=do_migrate)
+     parser.add_argument('stack_id')
+ 
++    # expire_events parser
++    parser = subparsers.add_parser('expire_events')
++    parser.set_defaults(func=expire_events)
++
+     # purge_deleted parser
+     parser = subparsers.add_parser('purge_deleted')
+     parser.set_defaults(func=purge_deleted)
+diff --git a/heat/common/config.py b/heat/common/config.py
+index d26cd49..a9f8715 100644
+--- a/heat/common/config.py
++++ b/heat/common/config.py
+@@ -33,6 +33,11 @@ paste_deploy_opts = [
+     cfg.StrOpt('api_paste_config', default="api-paste.ini",
+                help=_("The API paste config file to use."))]
+ 
++expirer_group = cfg.OptGroup('expirer')
++expirer_opts = [
++    cfg.IntOpt('max_events',
++               default=30000,
++               help=_('Max number of events to keep.'))]
+ 
+ service_opts = [
+     cfg.IntOpt('periodic_interval',
+@@ -404,6 +409,7 @@ def list_opts():
+     yield revision_group.name, revision_opts
+     yield volumes_group.name, volumes_opts
+     yield profiler.list_opts()[0]
++    yield expirer_group.name, expirer_opts
+     yield 'clients', default_clients_opts
+ 
+     for client in ('aodh', 'barbican', 'ceilometer', 'cinder', 'designate',
+@@ -424,6 +430,7 @@ cfg.CONF.register_group(paste_deploy_group)
+ cfg.CONF.register_group(auth_password_group)
+ cfg.CONF.register_group(revision_group)
+ profiler.set_defaults(cfg.CONF)
++cfg.CONF.register_group(expirer_group)
+ 
+ for group, opts in list_opts():
+     cfg.CONF.register_opts(opts, group=group)
+diff --git a/heat/db/sqlalchemy/api.py b/heat/db/sqlalchemy/api.py
+index 58e6efb..885b624 100644
+--- a/heat/db/sqlalchemy/api.py
++++ b/heat/db/sqlalchemy/api.py
+@@ -28,6 +28,7 @@ import osprofiler.sqlalchemy
+ import six
+ import sqlalchemy
+ from sqlalchemy import and_
++from sqlalchemy import desc
+ from sqlalchemy import func
+ from sqlalchemy import or_
+ from sqlalchemy import orm
+@@ -1281,6 +1282,20 @@ def service_get_all_by_args(context, host, binary, hostname):
+             filter_by(hostname=hostname).all())
+ 
+ 
++# Keep max_events based on created_at date
++# Only keep the most recent events.
++def expire_events(max_events):
++    engine = get_engine()
++    meta = sqlalchemy.MetaData()
++    meta.bind = engine
++    event = sqlalchemy.Table('event', meta, autoload=True)
++    events_kept = sqlalchemy.select([event.c.id])\
++        .order_by(desc(event.c.created_at))\
++        .limit(max_events)
++    event_del = event.delete().where(~event.c.id.in_(events_kept))
++    engine.execute(event_del)
++
++
+ def purge_deleted(age, granularity='days', project_id=None, batch_size=20):
+     def _validate_positive_integer(val, argname):
+         try:
+-- 
+2.7.4
+
